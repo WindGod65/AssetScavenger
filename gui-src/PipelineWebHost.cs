@@ -329,6 +329,19 @@ namespace AndroidGameUnpacker
             }
             try { Directory.CreateDirectory(outputRoot); }
             catch (Exception ex) { return "无法创建导出目录：" + ex.Message; }
+            string writeProbe = Path.Combine(outputRoot, ".assetscavenger-write-test-" + Guid.NewGuid().ToString("N") + ".tmp");
+            try
+            {
+                using (FileStream probe = new FileStream(writeProbe, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose)) probe.WriteByte(0);
+            }
+            catch (Exception ex)
+            {
+                return "导出目录不可写，请重新点击“选择”并换一个有权限的目录。Windows 返回：" + ex.Message;
+            }
+            finally
+            {
+                try { if (File.Exists(writeProbe)) File.Delete(writeProbe); } catch { }
+            }
 
             lock (_sync)
             {
@@ -382,7 +395,7 @@ namespace AndroidGameUnpacker
                 start.RedirectStandardOutput = true;
                 start.RedirectStandardError = true;
                 start.StandardOutputEncoding = Encoding.UTF8;
-                start.StandardErrorEncoding = Encoding.UTF8;
+                start.StandardErrorEncoding = Encoding.Default;
 
                 Process process = new Process();
                 process.StartInfo = start;
@@ -437,6 +450,18 @@ namespace AndroidGameUnpacker
 
         private void AppendLog(string line, bool isError)
         {
+            if (line.StartsWith("#< CLIXML", StringComparison.OrdinalIgnoreCase)) return;
+            if (line.StartsWith("<Objs ", StringComparison.OrdinalIgnoreCase))
+            {
+                List<string> messages = new List<string>();
+                foreach (Match match in Regex.Matches(line, "<S S=\"Error\">(.*?)</S>", RegexOptions.Singleline))
+                {
+                    string message = System.Net.WebUtility.HtmlDecode(match.Groups[1].Value).Replace("_x000D__x000A_", " ").Trim();
+                    if (message.Length > 0 && !messages.Contains(message)) messages.Add(message);
+                }
+                if (messages.Count == 0) return;
+                line = string.Join(" ", messages.ToArray());
+            }
             lock (_sync)
             {
                 string cleaned = Regex.Replace(line, "\\x1B\\[[0-9;?]*[ -/]*[@-~]", "");

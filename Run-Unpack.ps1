@@ -36,6 +36,7 @@ $script:WorkStartPercent = 20
 $script:WorkEndPercent = 80
 $script:DownloadedWebResources = 0
 $script:FailedWebResources = New-Object System.Collections.Generic.List[object]
+$script:UsedPythonWebFallback = $false
 
 function Write-Step([string]$Message) {
     $caller = @(Get-PSCallStack)[1]
@@ -515,6 +516,34 @@ function Get-WebRelativePath {
     return [Uri]::UnescapeDataString($from.MakeRelativeUri($to).ToString())
 }
 
+function Get-WebTextEncoding {
+    param([byte[]]$Bytes)
+    $prefixLength = [Math]::Min(8192, $Bytes.Length)
+    $prefix = [Text.Encoding]::ASCII.GetString($Bytes, 0, $prefixLength)
+    $match = [regex]::Match($prefix, '(?i)charset\s*=\s*["'']?([a-z0-9._-]+)')
+    if ($match.Success) {
+        try { return [Text.Encoding]::GetEncoding($match.Groups[1].Value) } catch { }
+    }
+    return New-Object Text.UTF8Encoding($false)
+}
+
+function Invoke-PythonWebDownload {
+    param([Uri]$Uri, [string]$Target, [string]$Referer)
+    $python = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
+    $helper = Join-Path $script:PipelineRoot 'tools\WebDownloader\fetch.py'
+    if (-not $python -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        throw 'Windows HTTPS 下载失败，且未找到 Python 后备下载器。请安装 Python 3，或改为导入已下载的本地网页游戏包。'
+    }
+    if (-not $script:UsedPythonWebFallback) {
+        Write-Step 'Windows HTTPS 通道不可用，已自动切换到 Python/OpenSSL 后备下载器'
+        $script:UsedPythonWebFallback = $true
+    }
+    & $python.Source $helper '--url' $Uri.AbsoluteUri '--output' $Target '--referer' $Referer
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Target -PathType Leaf)) {
+        throw "Python 后备下载失败，退出码 $LASTEXITCODE"
+    }
+}
+
 function Invoke-WebGameDownload {
     param([Uri]$Uri, [string]$Destination)
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
@@ -539,25 +568,39 @@ function Invoke-WebGameDownload {
             try {
                 $client.Headers['User-Agent'] = 'AssetScavenger/1.0 (local archival tool)'
                 $client.Headers['Referer'] = [string]$item.referer
-                if ($isText) { $bytes = $client.DownloadData($current) }
-                else { $client.DownloadFile($current, $target) }
+                try {
+                    if ($isText) { $bytes = $client.DownloadData($current) }
+                    else { $client.DownloadFile($current, $target) }
+                }
+                catch {
+                    Invoke-PythonWebDownload -Uri $current -Target $target -Referer ([string]$item.referer)
+                    if ($isText) { $bytes = [IO.File]::ReadAllBytes($target) }
+                }
             }
             finally { $client.Dispose() }
             if ($isText) {
-                $content = [Text.Encoding]::UTF8.GetString($bytes)
-                $matches = @([regex]::Matches($content, $referencePattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase))
-                foreach ($match in $matches) {
-                    $raw = ''
-                    foreach ($groupIndex in 1..3) { if ($match.Groups[$groupIndex].Value) { $raw = $match.Groups[$groupIndex].Value; break } }
+                $textEncoding = Get-WebTextEncoding -Bytes $bytes
+                $content = $textEncoding.GetString($bytes)
+                $references = New-Object System.Collections.Generic.List[string]
+                $is4399FlashPortal = [bool]$item.entry -and $current.Host -match '(?i)(^|\.)4399\.com$' -and $current.AbsolutePath -match '^/flash/\d+\.htm$'
+                if ($is4399FlashPortal) {
+                    foreach ($match in [regex]::Matches($content, '(?i)_strGamePath\s*=\s*["'']([^"'']+\.swf(?:\?[^"'']*)?)["'']')) {
+                        $references.Add('https://sda.4399.com/4399swf' + $match.Groups[1].Value)
+                    }
+                    $script:Warnings.Add('已启用 4399 Flash 页面专用解析：只跟踪真实 _strGamePath，跳过推荐游戏、广告和门户公共资源。')
+                }
+                else {
+                    foreach ($match in [regex]::Matches($content, $referencePattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                        foreach ($groupIndex in 1..3) { if ($match.Groups[$groupIndex].Value) { $references.Add($match.Groups[$groupIndex].Value); break } }
+                    }
+                }
+                foreach ($raw in @($references | Select-Object -Unique)) {
                     if ([string]::IsNullOrWhiteSpace($raw) -or $raw -match '^(?i:data:|blob:|javascript:|mailto:|#)') { continue }
                     try { $child = New-Object Uri ($current, $raw) } catch { continue }
                     if ($child.Scheme -notin @('http', 'https')) { continue }
-                    $childTarget = Get-WebMirrorPath -Uri $child -Root $Destination
-                    $relative = Get-WebRelativePath -FromFile $target -ToFile $childTarget
-                    $content = $content.Replace($raw, $relative)
                     $queue.Enqueue([pscustomobject]@{ uri = $child; entry = $false; referer = $current.AbsoluteUri })
                 }
-                [IO.File]::WriteAllText($target, $content, (New-Object Text.UTF8Encoding($false)))
+                [IO.File]::WriteAllText($target, $content, $textEncoding)
             }
             $script:DownloadedWebResources++
             if ($script:DownloadedWebResources -eq 1 -or $script:DownloadedWebResources % 25 -eq 0) {
@@ -795,8 +838,13 @@ $unresolved = Join-Path $script:JobRoot '07_unresolved'
 $script:UnityProject = Join-Path $script:JobRoot '08_unity_project'
 $script:WebRaw = Join-Path $script:JobRoot '09_web_game'
 $script:Logs = Join-Path $script:JobRoot 'logs'
-@($script:ReportDir, $rawApk, $script:RawAssets, $script:Images, $script:Audio, $script:Models, $script:Text, $unresolved, $script:WebRaw, $script:Logs) |
-    ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+try {
+    @($script:ReportDir, $rawApk, $script:RawAssets, $script:Images, $script:Audio, $script:Models, $script:Text, $unresolved, $script:WebRaw, $script:Logs) |
+        ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+}
+catch {
+    throw "无法在导出位置创建任务目录：$OutputRoot。请在网页中重新选择有写入权限且空间充足的目录。Windows 返回：$($_.Exception.Message)"
+}
 
 $started = Get-Date
 Write-ProgressStep -Percent 2 -Message "已创建任务目录：$($script:JobRoot)"
