@@ -1,0 +1,75 @@
+﻿2026-10-29 11:53:58 | VERBOSE | ---AssetStudioModCLI v0.19.0.0 [x64] | Logger launched---
+2026-10-29 11:53:58 | VERBOSE | CMD Args: D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\blind_box_xr_sound.ab -m info -o D:\手机解包游戏\安卓游戏解包流水线\jobs\blind_box_xr_sound_20261029_115358\00_report --log-level info --log-output both --max-export-tasks 4 --unity-version 2022.3.62f2 --export-asset-list xml
+2026-10-29 11:53:58 | VERBOSE |
+2026-10-29 11:53:58 | INFO    | [Current Options]
+2026-10-29 11:53:58 | INFO    | # Working Mode: Info
+2026-10-29 11:53:58 | INFO    | # Input Path: "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\blind_box_xr_sound.ab"
+2026-10-29 11:53:58 | INFO    | # Log Level: Info
+2026-10-29 11:53:58 | INFO    | # Log Output: Both
+2026-10-29 11:53:58 | INFO    | # Bundle BlockInfo Compression Type: Auto
+2026-10-29 11:53:58 | INFO    | # Bundle Block Compression Type: Auto
+2026-10-29 11:53:58 | INFO    | # Unity Version: 2022.3.62f2
+2026-10-29 11:53:58 | INFO    | # Decompress Bundles To Disk: False
+2026-10-29 11:53:58 | INFO    | # Parse Assets Using TypeTree: True
+2026-10-29 11:53:58 | INFO    | # Export Asset List: XML
+2026-10-29 11:53:58 | INFO    | # Load All Assets: False
+2026-10-29 11:53:58 | INFO    | # Export Asset Type(s): Texture2D, Texture2DArray, Sprite, TextAsset, MonoBehaviour, Font, Shader, AudioClip, VideoClip, MovieTexture, Mesh, Animator
+2026-10-29 11:53:58 | INFO    | # Filter by: None
+2026-10-29 11:53:58 | INFO    | # Filter With Regex: False
+2026-10-29 11:53:58 | INFO    | # Assembly Path: ""
+2026-10-29 11:53:58 | INFO    | ======
+2026-10-29 11:53:58 | INFO    |
+2026-10-29 11:53:58 | INFO    | Loading "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\blind_box_xr_sound.ab"
+2026-10-29 11:53:58 | INFO    | Decompressing LZMA stream...
+2026-10-29 11:53:58 | INFO    | Read assets...
+2026-10-29 11:53:58 | INFO    | Process assets...
+2026-10-29 11:53:58 | INFO    | Parse assets...
+2026-10-29 11:53:58 | INFO    | Finished loading 1 files with 1 exportable assets
+2026-10-29 11:53:58 | INFO    | Finished exporting asset list with 1 items.
+2026-10-29 11:53:58 | INFO    | ======
+2026-10-29 11:53:58 | INFO    | 
+2026-10-29 11:53:58 | INFO    | [Unity Version]
+2026-10-29 11:53:58 | INFO    | # 2022.3.62f2
+2026-10-29 11:53:58 | INFO    | 
+2026-10-29 11:53:58 | INFO    | [Exportable Assets Count]
+2026-10-29 11:53:58 | INFO    | # AudioClip: 1
+2026-10-29 11:53:58 | INFO    | 
+2026-10-29 11:53:58 | INFO    | # Exportable Live2D Models: 0
+2026-10-29 11:53:58 | INFO    |
+2026-10-29 11:53:58 | VERBOSE | ---Program ended---
+2026-10-29 11:53:58 | VERBOSE | ---AssetStudioModCLI v0.19.0.0 [x64] | Logger launched---
+2026-10-29 11:53:58 | VERBOSE | CMD Args: D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\blind_box_xr_sound.ab -m export -o D:\手机解包游戏\安卓游戏解包流水线\jobs\blind_box_xr_sound_20261029_115358\04_audio --log-level info --log-output both --max-export-tasks 4 -t audio --unity-version 2022.3.62f2 -g fileName -f assetName_pathID --audio-format wav
+2026-10-29 11:53:58 | VERBOSE |
+2026-10-29 11:53:58 | INFO    | [Current Options]
+2026-10-29 11:53:58 | INFO    | # Working Mode: Export
+2026-10-29 11:53:58 | INFO    | # Input Path: "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\blind_box_xr_sound.ab"
+2026-10-29 11:53:58 | INFO    | # Output Path: "D:\手机解包游戏\安卓游戏解包流水线\jobs\blind_box_xr_sound_20261029_115358\04_audio\"
+2026-10-29 11:53:58 | INFO    | # Log Level: Info
+2026-10-29 11:53:58 | INFO    | # Log Output: Both
+2026-10-29 11:53:58 | INFO    | # Bundle BlockInfo Compression Type: Auto
+2026-10-29 11:53:58 | INFO    | # Bundle Block Compression Type: Auto
+2026-10-29 11:53:58 | INFO    | # Unity Version: 2022.3.62f2
+2026-10-29 11:53:58 | INFO    | # Decompress Bundles To Disk: False
+2026-10-29 11:53:58 | INFO    | # Parse Assets Using TypeTree: True
+2026-10-29 11:53:58 | INFO    | # Export Asset List: None
+2026-10-29 11:53:58 | INFO    | # Export Asset Type(s): AudioClip
+2026-10-29 11:53:58 | INFO    | # Asset Group Option: SourceFileName
+2026-10-29 11:53:58 | INFO    | # Filename Format: AssetName_PathID
+2026-10-29 11:53:58 | INFO    | # Overwrite Existing Files: False
+2026-10-29 11:53:58 | INFO    | # Export Image Format: Png
+2026-10-29 11:53:58 | INFO    | # Export Audio Format: Wav
+2026-10-29 11:53:58 | INFO    | # Restore TextAsset Extension: True
+2026-10-29 11:53:58 | INFO    | # Max Parallel Export Tasks: 4
+2026-10-29 11:53:58 | INFO    | # Filter by: None
+2026-10-29 11:53:58 | INFO    | # Filter With Regex: False
+2026-10-29 11:53:58 | INFO    | # Assembly Path: ""
+2026-10-29 11:53:58 | INFO    | ======
+2026-10-29 11:53:58 | INFO    |
+2026-10-29 11:53:58 | INFO    | Loading "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\blind_box_xr_sound.ab"
+2026-10-29 11:53:58 | INFO    | Decompressing LZMA stream...
+2026-10-29 11:53:58 | INFO    | Read assets...
+2026-10-29 11:53:58 | INFO    | Process assets...
+2026-10-29 11:53:58 | INFO    | Parse assets...
+2026-10-29 11:53:58 | INFO    | Finished loading 1 files with 1 exportable assets
+2026-10-29 11:53:59 | INFO    | Finished exporting 1 asset(s) to "D:\手机解包游戏\安卓游戏解包流水线\jobs\blind_box_xr_sound_20261029_115358\04_audio\".
+2026-10-29 11:53:59 | VERBOSE | ---Program ended---

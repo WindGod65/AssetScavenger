@@ -1,0 +1,46 @@
+﻿2026-10-29 14:34:16 | VERBOSE | ---AssetStudioModCLI v0.19.0.0 [x64] | Logger launched---
+2026-10-29 14:34:16 | VERBOSE | CMD Args: D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\bullet.ab -m info -o C:\Users\user\AppData\Local\Temp\assetscavenger-log-verify\bullet_20261029_143416\00_report --log-level info --log-output both --max-export-tasks 4 --unity-version 2022.3.62f2 --export-asset-list xml
+2026-10-29 14:34:16 | VERBOSE |
+2026-10-29 14:34:16 | INFO    | [Current Options]
+2026-10-29 14:34:16 | INFO    | # Working Mode: Info
+2026-10-29 14:34:16 | INFO    | # Input Path: "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\bullet.ab"
+2026-10-29 14:34:16 | INFO    | # Log Level: Info
+2026-10-29 14:34:16 | INFO    | # Log Output: Both
+2026-10-29 14:34:16 | INFO    | # Bundle BlockInfo Compression Type: Auto
+2026-10-29 14:34:16 | INFO    | # Bundle Block Compression Type: Auto
+2026-10-29 14:34:16 | INFO    | # Unity Version: 2022.3.62f2
+2026-10-29 14:34:16 | INFO    | # Decompress Bundles To Disk: False
+2026-10-29 14:34:16 | INFO    | # Parse Assets Using TypeTree: True
+2026-10-29 14:34:16 | INFO    | # Export Asset List: XML
+2026-10-29 14:34:16 | INFO    | # Load All Assets: False
+2026-10-29 14:34:16 | INFO    | # Export Asset Type(s): Texture2D, Texture2DArray, Sprite, TextAsset, MonoBehaviour, Font, Shader, AudioClip, VideoClip, MovieTexture, Mesh, Animator
+2026-10-29 14:34:16 | INFO    | # Filter by: None
+2026-10-29 14:34:16 | INFO    | # Filter With Regex: False
+2026-10-29 14:34:16 | INFO    | # Assembly Path: ""
+2026-10-29 14:34:16 | INFO    | ======
+2026-10-29 14:34:16 | INFO    |
+2026-10-29 14:34:16 | INFO    | Loading "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\bullet.ab"
+2026-10-29 14:34:16 | INFO    | Decompressing LZMA stream...
+2026-10-29 14:34:17 | INFO    | Read assets...
+2026-10-29 14:34:18 | INFO    | Process assets...
+2026-10-29 14:34:18 | INFO    | Parse assets...
+2026-10-29 14:34:18 | INFO    | Finished loading 1 files with 10479 exportable assets
+2026-10-29 14:34:18 | INFO    | Finished exporting asset list with 10479 items.
+2026-10-29 14:34:18 | INFO    | ======
+2026-10-29 14:34:18 | INFO    | 
+2026-10-29 14:34:18 | INFO    | [Unity Version]
+2026-10-29 14:34:18 | INFO    | # 2022.3.62f2
+2026-10-29 14:34:18 | INFO    | 
+2026-10-29 14:34:18 | INFO    | [Exportable Assets Count]
+2026-10-29 14:34:18 | INFO    | # MonoBehaviour: 5943
+2026-10-29 14:34:18 | INFO    | # Sprite: 3490
+2026-10-29 14:34:18 | INFO    | # Texture2D: 345
+2026-10-29 14:34:18 | INFO    | # Animator: 664
+2026-10-29 14:34:18 | INFO    | # AudioClip: 27
+2026-10-29 14:34:18 | INFO    | # Mesh: 10
+2026-10-29 14:34:18 | INFO    | #
+2026-10-29 14:34:18 | INFO    | # Total: 10479 assets
+2026-10-29 14:34:18 | INFO    | 
+2026-10-29 14:34:18 | INFO    | # Exportable Live2D Models: 0
+2026-10-29 14:34:18 | INFO    |
+2026-10-29 14:34:18 | VERBOSE | ---Program ended---

@@ -1,0 +1,5 @@
+interface:
+  display_name: "安卓游戏解包流水线"
+  short_description: "识别并导出 Unity、Unreal 与 Android 游戏资源"
+  brand_color: "#3BA7FF"
+  default_prompt: "Use $android-game-unpack-pipeline to inspect this APK or game folder and export reusable resources safely."

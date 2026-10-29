@@ -1,0 +1,36 @@
+﻿2026-10-29 13:41:05 | VERBOSE | ---AssetStudioModCLI v0.19.0.0 [x64] | Logger launched---
+2026-10-29 13:41:05 | VERBOSE | CMD Args: D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\bullet.ab -m export -o C:\Users\user\AppData\Local\Temp\android-pipeline-three-formats-test\bullet_20261029_134102\05_models\OBJ --log-level info --log-output both --max-export-tasks 2 -t mesh --unity-version 2022.3.62f2 -g fileName -f assetName_pathID
+2026-10-29 13:41:05 | VERBOSE |
+2026-10-29 13:41:05 | INFO    | [Current Options]
+2026-10-29 13:41:05 | INFO    | # Working Mode: Export
+2026-10-29 13:41:05 | INFO    | # Input Path: "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\bullet.ab"
+2026-10-29 13:41:05 | INFO    | # Output Path: "C:\Users\user\AppData\Local\Temp\android-pipeline-three-formats-test\bullet_20261029_134102\05_models\OBJ\"
+2026-10-29 13:41:05 | INFO    | # Log Level: Info
+2026-10-29 13:41:05 | INFO    | # Log Output: Both
+2026-10-29 13:41:05 | INFO    | # Bundle BlockInfo Compression Type: Auto
+2026-10-29 13:41:05 | INFO    | # Bundle Block Compression Type: Auto
+2026-10-29 13:41:05 | INFO    | # Unity Version: 2022.3.62f2
+2026-10-29 13:41:05 | INFO    | # Decompress Bundles To Disk: False
+2026-10-29 13:41:05 | INFO    | # Parse Assets Using TypeTree: True
+2026-10-29 13:41:05 | INFO    | # Export Asset List: None
+2026-10-29 13:41:05 | INFO    | # Export Asset Type(s): Mesh
+2026-10-29 13:41:05 | INFO    | # Asset Group Option: SourceFileName
+2026-10-29 13:41:05 | INFO    | # Filename Format: AssetName_PathID
+2026-10-29 13:41:05 | INFO    | # Overwrite Existing Files: False
+2026-10-29 13:41:05 | INFO    | # Export Image Format: Png
+2026-10-29 13:41:05 | INFO    | # Export Audio Format: Wav
+2026-10-29 13:41:05 | INFO    | # Restore TextAsset Extension: True
+2026-10-29 13:41:05 | INFO    | # Max Parallel Export Tasks: 2
+2026-10-29 13:41:05 | INFO    | # Filter by: None
+2026-10-29 13:41:05 | INFO    | # Filter With Regex: False
+2026-10-29 13:41:05 | INFO    | # Assembly Path: ""
+2026-10-29 13:41:05 | INFO    | ======
+2026-10-29 13:41:05 | INFO    |
+2026-10-29 13:41:05 | INFO    | Loading "D:\手机解包游戏\元气骑士\元气骑士_REA解包\assets\AssetBundles\bullet.ab"
+2026-10-29 13:41:05 | INFO    | Decompressing LZMA stream...
+2026-10-29 13:41:05 | INFO    | Read assets...
+2026-10-29 13:41:06 | INFO    | Process assets...
+2026-10-29 13:41:06 | INFO    | Parse assets...
+2026-10-29 13:41:06 | INFO    | Finished loading 1 files with 10 exportable assets
+2026-10-29 13:41:06 | INFO    | Finished exporting 10 asset(s) to "C:\Users\user\AppData\Local\Temp\android-pipeline-three-formats-test\bullet_20261029_134102\05_models\OBJ\".
+2026-10-29 13:41:06 | VERBOSE | ---Program ended---
