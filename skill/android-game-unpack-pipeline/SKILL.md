@@ -5,7 +5,7 @@ description: Inspect, unpack, export, validate, or troubleshoot Android game res
 
 # Android Game Unpack Pipeline
 
-Use the maintained local tool at `D:\手机解包游戏\安卓游戏解包流水线`.
+Use the maintained local tool at `D:\手机解包游戏\AssetScavenger`.
 
 ## Choose the operation
 
@@ -13,6 +13,10 @@ Use the maintained local tool at `D:\手机解包游戏\安卓游戏解包流水
 - Use `Run-Unpack.ps1` directly for automation, diagnosis, repeatable tests, or selective exports.
 - Start with `-Profile scan` for an unknown or very large game. Use `standard` for converted resources. Use `full` only when raw bundle extraction is actually needed and adequate disk space is confirmed.
 - Use `-Profile unityProject` only for Unity input when the user explicitly wants an AssetRipper-reconstructed project. Treat `08_unity_project/ExportedProject` as a best-effort editable project, not recovered original source or proof that the game will run.
+- Route a public web-game URL through `-InputUrl <url> -Engine web`; use `-BuildPlayableWeb` only when the user wants a local mirror and accepts extra downloads. Route local SWF, HTML, web-game ZIP files and H5 game directories through `-Engine web`. Inspect `00_report/web_game_analysis.json`, `09_web_game/*/game_meta.json`, and `failed_resources.json` for detection and download failures.
+- URL mode may follow only public HTTP/HTTPS references found in the page. Do not import cookies or bypass login, payment, CAPTCHA, encryption, anti-bot checks, or other access controls. Treat Referer as ordinary public-request compatibility, not authorization bypass.
+- A playable mirror must run through its local HTTP launcher, not `file://`. Explain that asynchronous loads, cross-origin APIs, server dependencies, Flash/Ruffle compatibility, and platform SDKs may still prevent offline play.
+- Treat extracted JavaScript, ActionScript and sourcemaps as published client code, not proof that original TypeScript/C# or server-side gameplay logic was recovered. Never bypass authentication, payment, encryption, or platform access controls.
 - Export large games by resource type rather than selecting everything at once. Keep the output directory outside the input game directory.
 
 ## Preserve useful data

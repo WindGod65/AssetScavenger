@@ -1,9 +1,12 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
-    [string]$InputPath,
+    [Parameter(Position = 0)]
+    [string]$InputPath = '',
 
-    [ValidateSet('auto', 'unity', 'unreal', 'unknown')]
+    [string]$InputUrl = '',
+    [switch]$BuildPlayableWeb,
+
+    [ValidateSet('auto', 'unity', 'unreal', 'web', 'unknown')]
     [string]$Engine = 'auto',
 
     [ValidateSet('scan', 'standard', 'full', 'unityProject')]
@@ -31,6 +34,8 @@ $script:WorkTotal = 1
 $script:WorkIndex = 0
 $script:WorkStartPercent = 20
 $script:WorkEndPercent = 80
+$script:DownloadedWebResources = 0
+$script:FailedWebResources = New-Object System.Collections.Generic.List[object]
 
 function Write-Step([string]$Message) {
     $caller = @(Get-PSCallStack)[1]
@@ -177,6 +182,16 @@ function Get-DetectedEngine([string]$Path) {
         $extension = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
         if ($extension -in @('.ab', '.bundle', '.unity3d', '.assets')) { return 'unity' }
         if ($extension -eq '.pak') { return 'unreal' }
+        if ($extension -in @('.swf', '.html', '.htm')) { return 'web' }
+        if ($extension -eq '.zip') {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            try {
+                $names = @($zip.Entries | ForEach-Object { $_.FullName.ToLowerInvariant() })
+                if ($names -match '\.swf$' -or $names -match '(^|/)index\.html?$' -or $names -match '(^|/)(game|main|project|manifest)\.(js|json)$') { return 'web' }
+            }
+            finally { $zip.Dispose() }
+        }
         if ($extension -eq '.apk') {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
@@ -191,9 +206,12 @@ function Get-DetectedEngine([string]$Path) {
         $prefix = Get-FilePrefix -Path $Path -Count 8
         $ascii = [System.Text.Encoding]::ASCII.GetString($prefix)
         if ($ascii.StartsWith('UnityFS') -or $ascii.StartsWith('UnityWeb') -or $ascii.StartsWith('UnityRaw')) { return 'unity' }
+        if ($ascii.StartsWith('FWS') -or $ascii.StartsWith('CWS') -or $ascii.StartsWith('ZWS')) { return 'web' }
         return 'unknown'
     }
 
+    if (Test-PathContainsName $Path @('index.html', 'index.htm', 'game.js', 'game.json', 'project.json', 'manifest.json')) { return 'web' }
+    if (Get-ChildItem -LiteralPath $Path -Recurse -File -Filter '*.swf' -ErrorAction SilentlyContinue | Select-Object -First 1) { return 'web' }
     if (Test-PathContainsName $Path @('libunity.so', 'libil2cpp.so', 'globalgamemanagers')) { return 'unity' }
     if (Test-PathContainsName $Path @('libUE4.so', 'libUnreal.so')) { return 'unreal' }
     if (Get-ChildItem -LiteralPath $Path -Recurse -File -Filter '*.pak' -ErrorAction SilentlyContinue | Select-Object -First 1) { return 'unreal' }
@@ -420,6 +438,228 @@ function Copy-CategorizedUnrealFiles([string]$ExportRoot) {
     }
 }
 
+function Get-WebGameAnalysis([string]$Root) {
+    $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue)
+    $scripts = @($files | Where-Object { $_.Extension.ToLowerInvariant() -in @('.js', '.mjs', '.cjs', '.ts', '.lua', '.as') })
+    $sourceMaps = @($files | Where-Object { $_.Extension.ToLowerInvariant() -eq '.map' })
+    $samples = New-Object System.Collections.Generic.List[string]
+    foreach ($file in @($files | Where-Object { $_.Extension.ToLowerInvariant() -in @('.html', '.htm', '.js', '.json') } | Select-Object -First 80)) {
+        try {
+            $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction Stop
+            if ($text.Length -gt 524288) { $text = $text.Substring(0, 524288) }
+            $samples.Add($text)
+        }
+        catch { }
+    }
+    $combined = $samples -join "`n"
+    $framework = if ($files.Extension -contains '.swf') { 'Flash / ActionScript' }
+        elseif (($files.Extension -contains '.wasm') -and ($files.Extension -contains '.data')) { 'Unity WebGL' }
+        elseif ($combined -match '(?i)cocos2d|cocos creator|cc\.game|_CCSettings') { 'Cocos Creator / Cocos2d' }
+        elseif ($combined -match '(?i)Laya\.|laya\.core|LayaAir|GameConfig') { 'LayaAir' }
+        elseif ($combined -match '(?i)egret\.|egretProperties|Egret Engine') { 'Egret' }
+        elseif ($combined -match '(?i)c2runtime|c3runtime|Construct 2|Construct 3') { 'Construct' }
+        elseif ($combined -match '(?i)Phaser\.|new Phaser|phaser\.min') { 'Phaser' }
+        elseif ($combined -match '(?i)PIXI\.|pixi\.min') { 'PixiJS' }
+        else { '通用 HTML5 / JavaScript' }
+
+    $likelyGameplay = @($scripts | Where-Object {
+        $_.Name -notmatch '(?i)^(cocos|laya|egret|phaser|pixi|three|jquery|zepto|vendor|polyfill|runtime)[._-]' -and
+        $_.Name -notmatch '(?i)\.min\.js$'
+    })
+    return [ordered]@{
+        framework = $framework
+        files = $files.Count
+        scripts = $scripts.Count
+        sourceMaps = $sourceMaps.Count
+        likelyGameplayScripts = $likelyGameplay.Count
+        scriptNames = @($likelyGameplay | Select-Object -First 200 -ExpandProperty FullName)
+        note = 'JavaScript/ActionScript 可能包含客户端玩法逻辑；压缩、混淆、缺失 sourcemap、WASM 与服务器端逻辑无法保证恢复为原始源码。'
+    }
+}
+
+function Copy-WebGameFiles([string]$Root) {
+    $imageExtensions = @('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tga', '.dds', '.svg')
+    $audioExtensions = @('.wav', '.ogg', '.mp3', '.m4a', '.aac', '.flac', '.opus')
+    $modelExtensions = @('.obj', '.fbx', '.gltf', '.glb', '.dae')
+    $textExtensions = @('.html', '.htm', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.xml', '.plist', '.atlas', '.fnt', '.css', '.map', '.txt', '.csv', '.lua', '.as')
+    foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue) {
+        $extension = $file.Extension.ToLowerInvariant()
+        $destinationRoot = if (($AssetKinds -contains 'images') -and $extension -in $imageExtensions) { $script:Images }
+            elseif (($AssetKinds -contains 'audio') -and $extension -in $audioExtensions) { $script:Audio }
+            elseif (($AssetKinds -contains 'models') -and $extension -in $modelExtensions) { $script:Models }
+            elseif (($AssetKinds -contains 'text') -and $extension -in $textExtensions) { $script:Text }
+            else { '' }
+        if (-not $destinationRoot) { continue }
+        $relative = $file.FullName.Substring($Root.TrimEnd('\').Length).TrimStart('\')
+        $destination = Join-Path $destinationRoot $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $file.FullName -Destination $destination }
+    }
+}
+
+function Get-WebMirrorPath {
+    param([Uri]$Uri, [string]$Root, [switch]$Entry)
+    if ($Entry) { return Join-Path $Root 'index.html' }
+    $segments = @($Uri.Host) + @($Uri.AbsolutePath.Trim('/').Split('/') | Where-Object { $_ })
+    $safe = @($segments | ForEach-Object { Get-SafeName ([Uri]::UnescapeDataString($_)) })
+    if ($safe.Count -eq 1 -or $Uri.AbsolutePath.EndsWith('/')) { $safe += 'index.html' }
+    $path = $Root
+    foreach ($segment in $safe) { $path = Join-Path $path $segment }
+    return $path
+}
+
+function Get-WebRelativePath {
+    param([string]$FromFile, [string]$ToFile)
+    $from = New-Object Uri ((Split-Path -Parent $FromFile).TrimEnd('\') + '\')
+    $to = New-Object Uri $ToFile
+    return [Uri]::UnescapeDataString($from.MakeRelativeUri($to).ToString())
+}
+
+function Invoke-WebGameDownload {
+    param([Uri]$Uri, [string]$Destination)
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $queue = New-Object 'System.Collections.Generic.Queue[object]'
+    $queue.Enqueue([pscustomobject]@{ uri = $Uri; entry = $true; referer = $Uri.AbsoluteUri })
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $textExtensions = @('.html', '.htm', '.js', '.mjs', '.cjs', '.css', '.json', '.xml', '.txt', '.map')
+    $referencePattern = '(?:src|href|data-src|data|value)\s*=\s*["'']([^"''#]+)|url\(\s*["'']?([^"'')#]+)|["'']([^"'']+\.(?:swf|js|mjs|css|json|xml|wasm|data|unityweb|png|jpe?g|gif|webp|svg|mp3|ogg|wav|mp4|webm|atlas|bin)(?:\?[^"'']*)?)["'']'
+    $maxResources = 2500
+    Write-Step "开始分析公开网页入口：$($Uri.AbsoluteUri)"
+    while ($queue.Count -gt 0 -and $seen.Count -lt $maxResources) {
+        $item = $queue.Dequeue()
+        $current = [Uri]$item.uri
+        if (-not $seen.Add($current.AbsoluteUri)) { continue }
+        $target = Get-WebMirrorPath -Uri $current -Root $Destination -Entry:([bool]$item.entry)
+        try {
+            $parent = Split-Path -Parent $target
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            $extension = [IO.Path]::GetExtension($current.AbsolutePath).ToLowerInvariant()
+            $isText = [bool]$item.entry -or $textExtensions -contains $extension -or $extension -eq ''
+            $client = New-Object Net.WebClient
+            try {
+                $client.Headers['User-Agent'] = 'AssetScavenger/1.0 (local archival tool)'
+                $client.Headers['Referer'] = [string]$item.referer
+                if ($isText) { $bytes = $client.DownloadData($current) }
+                else { $client.DownloadFile($current, $target) }
+            }
+            finally { $client.Dispose() }
+            if ($isText) {
+                $content = [Text.Encoding]::UTF8.GetString($bytes)
+                $matches = @([regex]::Matches($content, $referencePattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase))
+                foreach ($match in $matches) {
+                    $raw = ''
+                    foreach ($groupIndex in 1..3) { if ($match.Groups[$groupIndex].Value) { $raw = $match.Groups[$groupIndex].Value; break } }
+                    if ([string]::IsNullOrWhiteSpace($raw) -or $raw -match '^(?i:data:|blob:|javascript:|mailto:|#)') { continue }
+                    try { $child = New-Object Uri ($current, $raw) } catch { continue }
+                    if ($child.Scheme -notin @('http', 'https')) { continue }
+                    $childTarget = Get-WebMirrorPath -Uri $child -Root $Destination
+                    $relative = Get-WebRelativePath -FromFile $target -ToFile $childTarget
+                    $content = $content.Replace($raw, $relative)
+                    $queue.Enqueue([pscustomobject]@{ uri = $child; entry = $false; referer = $current.AbsoluteUri })
+                }
+                [IO.File]::WriteAllText($target, $content, (New-Object Text.UTF8Encoding($false)))
+            }
+            $script:DownloadedWebResources++
+            if ($script:DownloadedWebResources -eq 1 -or $script:DownloadedWebResources % 25 -eq 0) {
+                Write-ProgressStep -Percent ([Math]::Min(68, 18 + [int]($script:DownloadedWebResources / 10))) -Message "网页镜像已下载 $($script:DownloadedWebResources) 个资源，待处理 $($queue.Count) 个......." -Location 'Invoke-WebGameDownload'
+            }
+        }
+        catch {
+            $failure = [pscustomobject]@{ url = $current.AbsoluteUri; reason = $_.Exception.Message; referer = [string]$item.referer }
+            $script:FailedWebResources.Add($failure)
+            $script:Issues.Add("网络下载失败：$($current.AbsoluteUri)；$($_.Exception.Message)")
+        }
+    }
+    if ($queue.Count -gt 0) { $script:Warnings.Add("网页引用超过安全上限 $maxResources，剩余 $($queue.Count) 项未自动下载。") }
+    if ($script:FailedWebResources.Count -gt 0) { $script:Warnings.Add('部分网页资源返回 403/404、需要特定 Referer，或在运行时异步生成；详见 failed_resources.json。') }
+    ConvertTo-Json -InputObject @($script:FailedWebResources.ToArray()) -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'failed_resources.json') -Encoding UTF8
+    [ordered]@{ sourceUrl = $Uri.AbsoluteUri; downloaded = $script:DownloadedWebResources; failed = $script:FailedWebResources.Count; created = (Get-Date).ToString('o') } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Destination 'game_meta.json') -Encoding UTF8
+    return $Destination
+}
+
+function New-WebPlayableLauncher {
+    param([string]$Root)
+    $batch = @(
+        '@echo off', 'cd /d "%~dp0"', 'where py >nul 2>nul',
+        'if %errorlevel%==0 (start "" http://127.0.0.1:18766/ & py -3 -m http.server 18766 --bind 127.0.0.1 --directory "%~dp0" & exit /b)',
+        'where python >nul 2>nul',
+        'if %errorlevel%==0 (start "" http://127.0.0.1:18766/ & python -m http.server 18766 --bind 127.0.0.1 --directory "%~dp0" & exit /b)',
+        'echo Python 3 was not found. Install Python or use another local HTTP server.', 'pause'
+    )
+    $batch | Set-Content -LiteralPath (Join-Path $Root 'Start-LocalGame.bat') -Encoding ASCII
+    $script:Warnings.Add('本地版本必须通过 Start-LocalGame.bat 的 HTTP 服务启动，不能直接双击 index.html。复杂异步加载、跨域接口、登录或服务端依赖可能仍无法离线运行。')
+    if (Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.swf' -ErrorAction SilentlyContinue) {
+        $script:Warnings.Add('本地版本包含 SWF；现代浏览器不能直接播放，需要 Ruffle。当前流水线未内置 Ruffle 时只保留 SWF 和 FFDec 分析结果。')
+    }
+}
+
+function Export-WebGameAssets {
+    $extension = if (Test-Path -LiteralPath $script:SourcePath -PathType Leaf) { [IO.Path]::GetExtension($script:SourcePath).ToLowerInvariant() } else { '' }
+    $webRoot = $script:SourcePath
+    if ($extension -eq '.zip') {
+        $webRoot = Join-Path $script:WebRaw 'site'
+        Start-WorkItem -Message '安全展开网页小游戏 ZIP'
+        Expand-ZipSafely -ArchivePath $script:SourcePath -Destination $webRoot
+        Complete-WorkItem -Message '安全展开网页小游戏 ZIP'
+    }
+
+    $swfFiles = if ($extension -eq '.swf') { @((Get-Item -LiteralPath $script:SourcePath)) }
+        elseif (Test-Path -LiteralPath $webRoot -PathType Container) { @(Get-ChildItem -LiteralPath $webRoot -Recurse -File -Filter '*.swf' -ErrorAction SilentlyContinue) }
+        else { @() }
+    if ($swfFiles.Count -gt 0 -and $Profile -ne 'scan') {
+        if (Test-Path -LiteralPath $script:FFDec -PathType Leaf) {
+            $ffdecOutput = Join-Path $script:WebRaw 'ffdec'
+            New-Item -ItemType Directory -Path $ffdecOutput -Force | Out-Null
+            foreach ($swf in $swfFiles) {
+                $target = Join-Path $ffdecOutput (Get-SafeName $swf.BaseName)
+                New-Item -ItemType Directory -Path $target -Force | Out-Null
+                [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-export', 'all', $target, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}.log" -f (Get-SafeName $swf.BaseName))) -Name ("FFDec 导出 {0}" -f $swf.Name))
+                Copy-WebGameFiles -Root $target
+            }
+            $webRoot = $ffdecOutput
+        }
+        else {
+            $script:Issues.Add("检测到 SWF，但缺少 FFDec：$($script:FFDec)。请安装 JPEXS FFDec 便携版后重试。")
+        }
+    }
+
+    Write-ProgressStep -Percent 72 -Message '正在识别网页游戏引擎和可能的玩法脚本'
+    $singleSwf = $extension -eq '.swf' -and (Test-Path -LiteralPath $script:SourcePath -PathType Leaf)
+    $analysisRoot = if (Test-Path -LiteralPath $webRoot -PathType Container) { $webRoot } elseif ($singleSwf) { $script:WebRaw } else { Split-Path -Parent $webRoot }
+    if ($singleSwf -and -not (Test-Path -LiteralPath $script:FFDec -PathType Leaf)) {
+        if ($Profile -ne 'scan') { Copy-Item -LiteralPath $script:SourcePath -Destination (Join-Path $script:WebRaw $swfFiles[0].Name) -Force }
+        $script:WebGameAnalysis = [ordered]@{
+            framework = 'Flash / ActionScript'; files = 1; scripts = 0; sourceMaps = 0; likelyGameplayScripts = 0; scriptNames = @()
+            note = '已识别单个 SWF；安装 JPEXS FFDec 后才能导出 ActionScript、P-code、图片和声音。'
+        }
+    }
+    else {
+        $script:WebGameAnalysis = Get-WebGameAnalysis -Root $analysisRoot
+    }
+    $script:WebFramework = [string]$script:WebGameAnalysis.framework
+    if ([int]$script:WebGameAnalysis.scripts -gt 0 -and [int]$script:WebGameAnalysis.sourceMaps -eq 0) {
+        $script:Warnings.Add('检测到客户端脚本但没有 sourcemap；导出的可能是压缩/混淆后的发布代码，不等于原始可编译源码。')
+    }
+    if ($script:WebFramework -match 'Unity WebGL') {
+        $script:Warnings.Add('Unity WebGL 的 .wasm/.data 可以保留和分析，但不能自动还原为原始 C# 工程或完整玩法源码。')
+    }
+    if ($urlMode) {
+        $script:Warnings.Add('网页镜像只包含公开客户端内容；账号、排行榜、支付、数据库、匹配等服务器端逻辑必须在复刻时自行重新实现。')
+    }
+    $script:WebGameAnalysis | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:ReportDir 'web_game_analysis.json') -Encoding UTF8
+
+    if ($Profile -ne 'scan' -and (Test-Path -LiteralPath $analysisRoot -PathType Container)) {
+        Copy-WebGameFiles -Root $analysisRoot
+        if ($Profile -eq 'full' -and -not $analysisRoot.StartsWith($script:WebRaw, [StringComparison]::OrdinalIgnoreCase)) {
+            $fullCopy = Join-Path $script:WebRaw 'source_copy'
+            New-Item -ItemType Directory -Path $fullCopy -Force | Out-Null
+            Get-ChildItem -LiteralPath $analysisRoot -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $fullCopy -Recurse -Force }
+        }
+    }
+    Write-Step ("网页游戏识别结果：{0}；脚本 {1}；sourcemap {2}；疑似玩法脚本 {3}" -f $script:WebFramework, $script:WebGameAnalysis.scripts, $script:WebGameAnalysis.sourceMaps, $script:WebGameAnalysis.likelyGameplayScripts)
+}
+
 function Export-UnrealAssets {
     $pakFiles = @()
     if (Test-Path -LiteralPath $script:SourcePath -PathType Leaf) { $pakFiles = @((Get-Item -LiteralPath $script:SourcePath)) }
@@ -513,13 +753,26 @@ function Test-ExportedFiles {
 
 if (-not (Test-Path -LiteralPath $script:ConfigPath -PathType Leaf)) { throw "找不到配置文件：$script:ConfigPath" }
 $script:Config = Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$resolvedInput = (Resolve-Path -LiteralPath $InputPath).Path
+$urlMode = -not [string]::IsNullOrWhiteSpace($InputUrl)
+if ($urlMode) {
+    $parsedInputUrl = $null
+    if (-not [Uri]::TryCreate($InputUrl, [UriKind]::Absolute, [ref]$parsedInputUrl) -or $parsedInputUrl.Scheme -notin @('http', 'https')) { throw 'InputUrl 必须是完整的 http:// 或 https:// 地址。' }
+    if ($Engine -ne 'web') { throw '网址输入只允许使用 web 引擎。' }
+    $resolvedInput = $parsedInputUrl.AbsoluteUri
+}
+else {
+    if ([string]::IsNullOrWhiteSpace($InputPath)) { throw '必须提供 InputPath 或 InputUrl。' }
+    $resolvedInput = (Resolve-Path -LiteralPath $InputPath).Path
+}
 $script:AssetStudioCli = Resolve-ConfiguredPath $script:Config.assetStudioCli
 $script:Umodel = Resolve-ConfiguredPath $script:Config.umodel
 $script:AssetRipper = Resolve-ConfiguredPath $script:Config.assetRipperGui
+$script:FFDec = Resolve-ConfiguredPath $script:Config.ffdec
 $script:MaxTasks = if ($MaxExportTasks -gt 0) { $MaxExportTasks } else { [int]$script:Config.defaultMaxExportTasks }
 
-$baseName = if (Test-Path -LiteralPath $resolvedInput -PathType Leaf) { [System.IO.Path]::GetFileNameWithoutExtension($resolvedInput) } else { Split-Path -Leaf $resolvedInput }
+$baseName = if ($urlMode) { '{0}_{1}' -f $parsedInputUrl.Host, ([IO.Path]::GetFileNameWithoutExtension($parsedInputUrl.AbsolutePath.TrimEnd('/'))) }
+    elseif (Test-Path -LiteralPath $resolvedInput -PathType Leaf) { [System.IO.Path]::GetFileNameWithoutExtension($resolvedInput) }
+    else { Split-Path -Leaf $resolvedInput }
 $baseName = Get-SafeName $baseName
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $script:PipelineRoot 'jobs' }
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
@@ -540,14 +793,22 @@ $script:Models = Join-Path $script:JobRoot '05_models'
 $script:Text = Join-Path $script:JobRoot '06_text'
 $unresolved = Join-Path $script:JobRoot '07_unresolved'
 $script:UnityProject = Join-Path $script:JobRoot '08_unity_project'
+$script:WebRaw = Join-Path $script:JobRoot '09_web_game'
 $script:Logs = Join-Path $script:JobRoot 'logs'
-@($script:ReportDir, $rawApk, $script:RawAssets, $script:Images, $script:Audio, $script:Models, $script:Text, $unresolved, $script:Logs) |
+@($script:ReportDir, $rawApk, $script:RawAssets, $script:Images, $script:Audio, $script:Models, $script:Text, $unresolved, $script:WebRaw, $script:Logs) |
     ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 
 $started = Get-Date
 Write-ProgressStep -Percent 2 -Message "已创建任务目录：$($script:JobRoot)"
 Write-ProgressStep -Percent 4 -Message "正在准备输入：$resolvedInput"
-if ([System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant() -eq '.apk') {
+if ($urlMode) {
+    $webDestination = Join-Path $script:WebRaw $(if ($BuildPlayableWeb) { 'playable' } else { 'downloaded' })
+    $script:SourcePath = Invoke-WebGameDownload -Uri $parsedInputUrl -Destination $webDestination
+    Set-Content -LiteralPath (Join-Path $rawApk 'SOURCE_URL.txt') -Value $resolvedInput -Encoding UTF8
+    if ($BuildPlayableWeb) { New-WebPlayableLauncher -Root $script:SourcePath }
+    Write-ProgressStep -Percent 69 -Message "网页公开资源下载完成：成功 $($script:DownloadedWebResources)，失败 $($script:FailedWebResources.Count)"
+}
+elseif ([System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant() -eq '.apk') {
     Write-Step '安全展开 APK（阻止路径穿越，不覆盖现有文件）'
     Expand-ZipSafely -ArchivePath $resolvedInput -Destination $rawApk
     $script:SourcePath = $rawApk
@@ -559,7 +820,8 @@ else {
     Write-ProgressStep -Percent 10 -Message '输入路径登记完成，无需展开 APK'
 }
 
-Write-ProgressStep -Percent 12 -Message '正在识别游戏引擎和版本'
+$detectPercent = if ($urlMode) { 70 } else { 12 }
+Write-ProgressStep -Percent $detectPercent -Message '正在识别游戏引擎和版本'
 $detected = if ($Engine -eq 'auto') { Get-DetectedEngine $script:SourcePath } else { $Engine }
 $script:DetectedUnityVersion = $UnityVersion
 if ($detected -eq 'unity' -and [string]::IsNullOrWhiteSpace($script:DetectedUnityVersion)) {
@@ -568,7 +830,7 @@ if ($detected -eq 'unity' -and [string]::IsNullOrWhiteSpace($script:DetectedUnit
 if ($detected -eq 'unity' -and [string]::IsNullOrWhiteSpace($script:DetectedUnityVersion)) {
     $script:DetectedUnityVersion = [string]$script:Config.defaultUnityVersion
 }
-Write-ProgressStep -Percent 15 -Message "识别引擎：$detected"
+Write-ProgressStep -Percent $(if ($urlMode) { 71 } else { 15 }) -Message "识别引擎：$detected"
 if ($script:DetectedUnityVersion) { Write-Step "Unity 版本：$($script:DetectedUnityVersion)" }
 
 if ($detected -eq 'unity') {
@@ -583,6 +845,9 @@ if ($detected -eq 'unity') {
 elseif ($detected -eq 'unreal') {
     $script:WorkTotal = if ($Profile -eq 'scan') { 1 } else { 2 }
 }
+elseif ($detected -eq 'web') {
+    $script:WorkTotal = if ($urlMode) { 2 } elseif ([IO.Path]::GetExtension($script:SourcePath).ToLowerInvariant() -eq '.zip') { 2 } else { 1 }
+}
 $script:WorkTotal = [Math]::Max(1, $script:WorkTotal)
 Write-Step ("计划执行 {0} 个主要处理任务" -f $script:WorkTotal)
 
@@ -590,6 +855,7 @@ try {
     switch ($detected) {
         'unity' { Export-UnityAssets }
         'unreal' { Export-UnrealAssets }
+        'web' { Export-WebGameAssets }
         default {
             $script:Issues.Add('未识别出 Unity 或 Unreal。已保留输入信息，没有盲目调用错误的解包器。')
         }
@@ -620,6 +886,7 @@ $counts = [ordered]@{
     validationFailed = $failedValidation.Count
     unresolved = @($script:Issues | Select-Object -Unique).Count
     unityProjectFiles = [int]$script:UnityProjectFiles
+    webScripts = @(Get-ChildItem -LiteralPath $script:Text -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension.ToLowerInvariant() -in @('.js', '.mjs', '.cjs', '.ts', '.lua', '.as') }).Count
 }
 
 $uniqueIssues = @($script:Issues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
@@ -643,6 +910,13 @@ $report = [ordered]@{
     assetKinds = $AssetKinds
     modelFormats = $ModelFormats
     unityProjectPath = $script:UnityProjectPath
+    webFramework = $script:WebFramework
+    webGameAnalysis = $script:WebGameAnalysis
+    inputUrl = $(if ($urlMode) { $resolvedInput } else { $null })
+    buildPlayableWeb = [bool]$BuildPlayableWeb
+    playablePath = $(if ($BuildPlayableWeb) { $script:SourcePath } else { $null })
+    downloadedWebResources = $script:DownloadedWebResources
+    failedWebResources = $script:FailedWebResources.Count
     started = $started.ToString('o')
     finished = (Get-Date).ToString('o')
     counts = $counts
@@ -657,7 +931,7 @@ $markdown = @(
     ('- 输入：`{0}`' -f $resolvedInput), ('- 引擎：`{0}`' -f $detected), ('- Unity 版本：`{0}`' -f $script:DetectedUnityVersion), ('- 模式：`{0}`' -f $Profile), '',
     '## 导出统计', '',
     "- 图片：$($counts.images)", "- 音频：$($counts.audio)", "- 模型：$($counts.models)", "- 文本：$($counts.text)",
-    "- Unity 工程文件：$($counts.unityProjectFiles)", "- 验证通过：$($counts.validationPassed)", "- 验证失败：$($counts.validationFailed)", "- 未解决记录：$($counts.unresolved)", "- 注意事项：$($uniqueWarnings.Count)", '',
+    "- Unity 工程文件：$($counts.unityProjectFiles)", "- 网页玩法脚本：$($counts.webScripts)", "- 网页引擎：$($script:WebFramework)", "- 验证通过：$($counts.validationPassed)", "- 验证失败：$($counts.validationFailed)", "- 未解决记录：$($counts.unresolved)", "- 注意事项：$($uniqueWarnings.Count)", '',
     '## 说明', '',
     '导出数量为 0 不一定表示源包没有该资源，也可能是资源加密、依赖缺失、工具不支持或当前筛选不包含该类型。详细信息见 `07_unresolved/issues.txt` 和 `logs`。'
 )

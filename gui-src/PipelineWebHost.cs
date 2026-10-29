@@ -289,13 +289,19 @@ namespace AndroidGameUnpacker
 
         private string StartJob(StartRequest request)
         {
-            if (request == null || string.IsNullOrWhiteSpace(request.InputPath)) return "请先选择 APK、资源包或游戏目录。";
-            string inputPath = request.InputPath.Trim();
-            if (!File.Exists(inputPath) && !Directory.Exists(inputPath)) return "输入路径不存在。";
+            if (request == null) return "请求内容为空。";
+            string inputUrl = (request.InputUrl ?? "").Trim();
+            string inputPath = (request.InputPath ?? "").Trim();
+            bool urlMode = inputUrl.Length > 0;
+            Uri parsedUrl;
+            if (urlMode && (!Uri.TryCreate(inputUrl, UriKind.Absolute, out parsedUrl) || (parsedUrl.Scheme != Uri.UriSchemeHttp && parsedUrl.Scheme != Uri.UriSchemeHttps))) return "网页地址必须是完整的 http:// 或 https:// URL。";
+            if (!urlMode && inputPath.Length == 0) return "请粘贴网页游戏网址，或选择本地文件/目录。";
+            if (!urlMode && !File.Exists(inputPath) && !Directory.Exists(inputPath)) return "输入路径不存在。";
             string script = Path.Combine(_baseDirectory, "Run-Unpack.ps1");
             if (!File.Exists(script)) return "找不到 Run-Unpack.ps1。";
 
-            string engine = Allowed(request.Engine, new[] { "auto", "unity", "unreal", "unknown" }, "auto");
+            string engine = Allowed(request.Engine, new[] { "auto", "unity", "unreal", "web", "unknown" }, "auto");
+            if (urlMode && engine != "web") return "网址输入只适用于“网页小游戏 / 4399”页面。";
             string profile = Allowed(request.Profile, new[] { "scan", "standard", "full", "unityproject" }, "standard");
             bool ordinaryExport = profile == "standard" || profile == "full";
             if (profile == "unityproject" && engine != "auto" && engine != "unity") return "Unity 工程重建只适用于 Unity 输入。";
@@ -315,7 +321,7 @@ namespace AndroidGameUnpacker
             try { outputRoot = Path.GetFullPath(outputRoot); }
             catch { return "导出路径无效。"; }
             if (File.Exists(outputRoot)) return "导出路径指向一个文件，请选择目录。";
-            if (Directory.Exists(inputPath))
+            if (!urlMode && Directory.Exists(inputPath))
             {
                 string inputFull = Path.GetFullPath(inputPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 string outputFull = outputRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -327,25 +333,27 @@ namespace AndroidGameUnpacker
             lock (_sync)
             {
                 if (_state.Status == "running" || _state.Status == "stopping") return "已有任务正在运行。";
-                _state = PipelineState.CreateRunning(inputPath, outputRoot, engine, profile, kinds.ToArray(), modelFormats.ToArray());
+                _state = PipelineState.CreateRunning(urlMode ? inputUrl : inputPath, outputRoot, engine, profile, kinds.ToArray(), modelFormats.ToArray());
                 _state.PlannedPhases = profile == "unityproject" ? 2 : 1 + (profile == "full" ? 1 : 0) + (profile == "scan" ? 0 : kinds.Count) + (ordinaryExport && kinds.Contains("models") && modelFormats.Any(delegate(string value) { return value != "obj"; }) ? 1 : 0);
             }
 
-            Thread worker = new Thread(new ThreadStart(delegate { RunJob(script, inputPath, outputRoot, engine, profile, kinds, modelFormats, request.UnityVersion, request.MaxExportTasks); }));
+            Thread worker = new Thread(new ThreadStart(delegate { RunJob(script, inputPath, inputUrl, request.BuildPlayableWeb, outputRoot, engine, profile, kinds, modelFormats, request.UnityVersion, request.MaxExportTasks); }));
             worker.IsBackground = true;
             worker.Name = "UnpackPipelineWorker";
             worker.Start();
             return null;
         }
 
-        private void RunJob(string script, string inputPath, string outputRoot, string engine, string profile, List<string> kinds, List<string> modelFormats, string unityVersion, int maxTasks)
+        private void RunJob(string script, string inputPath, string inputUrl, bool buildPlayableWeb, string outputRoot, string engine, string profile, List<string> kinds, List<string> modelFormats, string unityVersion, int maxTasks)
         {
             try
             {
                 StringBuilder command = new StringBuilder();
                 command.Append("[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = [Console]::OutputEncoding; $ProgressPreference = 'SilentlyContinue'; ");
                 command.Append("& ").Append(PsLiteral(script));
-                command.Append(" -InputPath ").Append(PsLiteral(inputPath));
+                if (!string.IsNullOrWhiteSpace(inputUrl)) command.Append(" -InputUrl ").Append(PsLiteral(inputUrl));
+                else command.Append(" -InputPath ").Append(PsLiteral(inputPath));
+                if (buildPlayableWeb) command.Append(" -BuildPlayableWeb");
                 command.Append(" -OutputRoot ").Append(PsLiteral(outputRoot));
                 command.Append(" -Engine ").Append(PsLiteral(engine));
                 command.Append(" -Profile ").Append(PsLiteral(profile));
@@ -732,8 +740,8 @@ namespace AndroidGameUnpacker
             {
                 using (OpenFileDialog dialog = new OpenFileDialog())
                 {
-                    dialog.Title = "选择 APK、Unity/Unreal 资源包";
-                    dialog.Filter = "支持的游戏文件|*.apk;*.ab;*.bundle;*.unity3d;*.assets;*.pak|Android APK|*.apk|Unity 资源|*.ab;*.bundle;*.unity3d;*.assets|Unreal PAK|*.pak|所有文件|*.*";
+                    dialog.Title = "选择 APK、Unity/Unreal 资源包或网页小游戏";
+                    dialog.Filter = "支持的游戏文件|*.apk;*.ab;*.bundle;*.unity3d;*.assets;*.pak;*.swf;*.zip;*.html;*.htm|Android APK|*.apk|Unity 资源|*.ab;*.bundle;*.unity3d;*.assets|Unreal PAK|*.pak|网页小游戏|*.swf;*.zip;*.html;*.htm|所有文件|*.*";
                     dialog.CheckFileExists = true;
                     dialog.RestoreDirectory = true;
                     return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.FileName : null;
@@ -747,7 +755,7 @@ namespace AndroidGameUnpacker
             {
                 using (FolderBrowserDialog dialog = new FolderBrowserDialog())
                 {
-                    dialog.Description = "选择已解包 APK、Unity 游戏或 Unreal 游戏目录";
+                    dialog.Description = "选择已解包 APK、Unity、Unreal 或 HTML5 网页小游戏目录";
                     dialog.ShowNewFolderButton = false;
                     return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.SelectedPath : null;
                 }
@@ -809,6 +817,7 @@ namespace AndroidGameUnpacker
     internal sealed class StartRequest
     {
         public string InputPath { get; set; }
+        public string InputUrl { get; set; }
         public string OutputPath { get; set; }
         public string Engine { get; set; }
         public string Profile { get; set; }
@@ -817,6 +826,7 @@ namespace AndroidGameUnpacker
         public string UnityVersion { get; set; }
         public int MaxExportTasks { get; set; }
         public bool ConfirmLargeExport { get; set; }
+        public bool BuildPlayableWeb { get; set; }
     }
 
     internal sealed class PathRequest

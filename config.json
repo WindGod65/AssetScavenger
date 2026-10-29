@@ -2,6 +2,7 @@
   "assetStudioCli": "tools\\AssetStudioModCLI-0.19.0-net472\\AssetStudioModCLI_net472_win32_64\\AssetStudioModCLI.exe",
   "assetRipperGui": "C:\\Users\\user\\Desktop\\AssetRipper\\AssetRipper.GUI.Free.exe",
   "umodel": "C:\\Users\\user\\Desktop\\Umodel_materials.exe",
+  "ffdec": "tools\\FFDec\\ffdec.bat",
   "defaultMaxExportTasks": 8,
   "defaultUnityVersion": "",
   "imageFormat": "png",
