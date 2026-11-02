@@ -5,6 +5,8 @@ param(
 
     [string]$InputUrl = '',
     [switch]$BuildPlayableWeb,
+    [Alias('ExportFlashProject')]
+    [switch]$AutoUnpackSwf,
 
     [ValidateSet('auto', 'unity', 'unreal', 'web', 'unknown')]
     [string]$Engine = 'auto',
@@ -34,6 +36,8 @@ $script:WorkTotal = 1
 $script:WorkIndex = 0
 $script:WorkStartPercent = 20
 $script:WorkEndPercent = 80
+$script:WorkRangeStart = 20
+$script:WorkRangeEnd = 80
 $script:DownloadedWebResources = 0
 $script:FailedWebResources = New-Object System.Collections.Generic.List[object]
 $script:UsedPythonWebFallback = $false
@@ -58,8 +62,9 @@ function Start-WorkItem([string]$Message) {
     $caller = @(Get-PSCallStack)[1]
     $location = if ($caller -and $caller.FunctionName) { $caller.FunctionName } else { '主流程' }
     $script:WorkIndex++
-    $script:WorkStartPercent = 20 + [int][Math]::Floor((($script:WorkIndex - 1) * 60.0) / [Math]::Max(1, $script:WorkTotal))
-    $script:WorkEndPercent = 20 + [int][Math]::Floor(($script:WorkIndex * 60.0) / [Math]::Max(1, $script:WorkTotal))
+    $range = [Math]::Max(1, $script:WorkRangeEnd - $script:WorkRangeStart)
+    $script:WorkStartPercent = $script:WorkRangeStart + [int][Math]::Floor((($script:WorkIndex - 1) * $range) / [Math]::Max(1, $script:WorkTotal))
+    $script:WorkEndPercent = $script:WorkRangeStart + [int][Math]::Floor(($script:WorkIndex * $range) / [Math]::Max(1, $script:WorkTotal))
     Write-ProgressStep -Percent $script:WorkStartPercent -Message ("开始 {0}（任务 {1}/{2}）" -f $Message, $script:WorkIndex, $script:WorkTotal) -Location $location
 }
 
@@ -440,7 +445,9 @@ function Copy-CategorizedUnrealFiles([string]$ExportRoot) {
 }
 
 function Get-WebGameAnalysis([string]$Root) {
-    $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue)
+    $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.FullName -notmatch '(?i)\\(fla|xfl|original_swf)\\'
+    })
     $scripts = @($files | Where-Object { $_.Extension.ToLowerInvariant() -in @('.js', '.mjs', '.cjs', '.ts', '.lua', '.as') })
     $sourceMaps = @($files | Where-Object { $_.Extension.ToLowerInvariant() -eq '.map' })
     $samples = New-Object System.Collections.Generic.List[string]
@@ -484,6 +491,7 @@ function Copy-WebGameFiles([string]$Root) {
     $modelExtensions = @('.obj', '.fbx', '.gltf', '.glb', '.dae')
     $textExtensions = @('.html', '.htm', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.xml', '.plist', '.atlas', '.fnt', '.css', '.map', '.txt', '.csv', '.lua', '.as')
     foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue) {
+        if ($file.FullName -match '(?i)\\(fla|xfl|original_swf)\\') { continue }
         $extension = $file.Extension.ToLowerInvariant()
         $destinationRoot = if (($AssetKinds -contains 'images') -and $extension -in $imageExtensions) { $script:Images }
             elseif (($AssetKinds -contains 'audio') -and $extension -in $audioExtensions) { $script:Audio }
@@ -663,6 +671,44 @@ function New-WebPlayableLauncher {
     }
 }
 
+function Export-FlashSwfPackages {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.FileInfo[]]$SwfFiles,
+        [Parameter(Mandatory = $true)][string]$OutputRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $script:FFDec -PathType Leaf)) {
+        throw "检测到 SWF，但找不到内置 FFDec：$($script:FFDec)"
+    }
+
+    New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+    $script:WorkTotal = [Math]::Max($script:WorkTotal, $script:WorkIndex + ($SwfFiles.Count * 3))
+    $previousAppData = $env:APPDATA
+    $targets = New-Object System.Collections.Generic.List[string]
+    try {
+        $env:APPDATA = Join-Path $script:Logs 'ffdec_appdata'
+        New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
+        foreach ($swf in $SwfFiles) {
+            $safeBaseName = Get-SafeName $swf.BaseName
+            $target = Join-Path $OutputRoot ("{0}_解包" -f $safeBaseName)
+            $original = Join-Path $target 'original_swf'
+            $resources = Join-Path $target 'resources'
+            $fla = Join-Path $target 'fla'
+            $xfl = Join-Path $target 'xfl'
+            @($original, $resources, $fla, $xfl) | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+            Copy-Item -LiteralPath $swf.FullName -Destination (Join-Path $original $swf.Name) -Force
+            [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'script:as,image:png_gif_jpeg,sound:mp3_wav,font:ttf,text:plain', '-export', 'script,image,sound,font,text,symbolClass,binaryData', $resources, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_resources.log" -f $safeBaseName)) -Name ("FFDec 源码与资源 {0}" -f $swf.Name))
+            [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'fla:cs6', '-export', 'fla', $fla, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_fla.log" -f $safeBaseName)) -Name ("FFDec FLA 工程 {0}" -f $swf.Name))
+            [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'xfl:cs6', '-export', 'xfl', $xfl, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_xfl.log" -f $safeBaseName)) -Name ("FFDec XFL 工程 {0}" -f $swf.Name))
+            $targets.Add($target)
+        }
+    }
+    finally {
+        $env:APPDATA = $previousAppData
+    }
+    return $targets.ToArray()
+}
+
 function Export-WebGameAssets {
     $extension = if (Test-Path -LiteralPath $script:SourcePath -PathType Leaf) { [IO.Path]::GetExtension($script:SourcePath).ToLowerInvariant() } else { '' }
     $webRoot = $script:SourcePath
@@ -676,23 +722,28 @@ function Export-WebGameAssets {
     $swfFiles = if ($extension -eq '.swf') { @((Get-Item -LiteralPath $script:SourcePath)) }
         elseif (Test-Path -LiteralPath $webRoot -PathType Container) { @(Get-ChildItem -LiteralPath $webRoot -Recurse -File -Filter '*.swf' -ErrorAction SilentlyContinue) }
         else { @() }
-    if ($swfFiles.Count -gt 0 -and $Profile -ne 'scan') {
+    if ($swfFiles.Count -gt 0 -and $Profile -ne 'scan' -and $AutoUnpackSwf) {
         if (Test-Path -LiteralPath $script:FFDec -PathType Leaf) {
             $ffdecOutput = Join-Path $script:WebRaw 'ffdec'
-            New-Item -ItemType Directory -Path $ffdecOutput -Force | Out-Null
-            foreach ($swf in $swfFiles) {
-                $target = Join-Path $ffdecOutput (Get-SafeName $swf.BaseName)
-                New-Item -ItemType Directory -Path $target -Force | Out-Null
-                [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-export', 'all', $target, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}.log" -f (Get-SafeName $swf.BaseName))) -Name ("FFDec 导出 {0}" -f $swf.Name))
-            }
+            [void](Export-FlashSwfPackages -SwfFiles $swfFiles -OutputRoot $ffdecOutput)
+            $script:Warnings.Add('Flash 复刻工程包已生成：original_swf 保留原文件，resources 包含 ActionScript 与素材，fla/xfl 用于查看时间轴和元件结构。反编译代码不是作者原始工程，仍可能需要手工修复。')
             $webRoot = $ffdecOutput
         }
         else {
             $script:Issues.Add("检测到 SWF，但缺少 FFDec：$($script:FFDec)。请安装 JPEXS FFDec 便携版后重试。")
         }
     }
+    elseif ($swfFiles.Count -gt 0 -and $Profile -ne 'scan') {
+        $swfOnly = Join-Path $script:WebRaw 'swf'
+        New-Item -ItemType Directory -Path $swfOnly -Force | Out-Null
+        foreach ($swf in $swfFiles) {
+            Copy-Item -LiteralPath $swf.FullName -Destination (Join-Path $swfOnly $swf.Name) -Force
+        }
+        $webRoot = $swfOnly
+        $script:Warnings.Add('已关闭“自动解包 SWF 文件”，本次只保留原始 SWF，没有调用 FFDec。')
+    }
 
-    Write-ProgressStep -Percent 72 -Message '正在识别网页游戏引擎和可能的玩法脚本'
+    Write-ProgressStep -Percent $(if ($swfFiles.Count -gt 0 -and $Profile -ne 'scan' -and $AutoUnpackSwf) { 82 } else { 72 }) -Message '正在识别网页游戏引擎和可能的玩法脚本'
     $singleSwf = $extension -eq '.swf' -and (Test-Path -LiteralPath $script:SourcePath -PathType Leaf)
     $analysisRoot = if (Test-Path -LiteralPath $webRoot -PathType Container) { $webRoot } elseif ($singleSwf) { $script:WebRaw } else { Split-Path -Parent $webRoot }
     if ($singleSwf -and -not (Test-Path -LiteralPath $script:FFDec -PathType Leaf)) {
@@ -860,7 +911,19 @@ if ($isDirect4399) {
     New-Item -ItemType Directory -Path $script:JobRoot -Force | Out-Null
     Write-ProgressStep -Percent 2 -Message "已创建 SWF 导出文件夹：$($script:JobRoot)"
     $script:SourcePath = Invoke-WebGameDownload -Uri $parsedInputUrl -Destination $script:JobRoot
-    Write-ProgressStep -Percent 100 -Message "SWF 直取完成：$($script:DownloadedWebResources) 个文件，失败 $($script:FailedWebResources.Count)"
+    if ($AutoUnpackSwf) {
+        $script:Logs = Join-Path $script:JobRoot 'logs'
+        New-Item -ItemType Directory -Path $script:Logs -Force | Out-Null
+        $swfFiles = @(Get-ChildItem -LiteralPath $script:JobRoot -Filter '*.swf' -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })
+        $script:WorkRangeStart = 68
+        $script:WorkRangeEnd = 96
+        Write-ProgressStep -Percent 68 -Message "已获取 $($swfFiles.Count) 个 SWF，正在调用内置 FFDec 自动解包"
+        [void](Export-FlashSwfPackages -SwfFiles $swfFiles -OutputRoot $script:JobRoot)
+        Write-ProgressStep -Percent 100 -Message "SWF 获取并自动解包完成：$($swfFiles.Count) 个文件"
+    }
+    else {
+        Write-ProgressStep -Percent 100 -Message "SWF 直取完成：$($script:DownloadedWebResources) 个文件，失败 $($script:FailedWebResources.Count)"
+    }
     Write-Host "SWF 文件夹：$($script:JobRoot)"
     Write-Output $script:JobRoot
     return
@@ -934,6 +997,10 @@ elseif ($detected -eq 'unreal') {
 }
 elseif ($detected -eq 'web') {
     $script:WorkTotal = if ($urlMode) { 2 } elseif ([IO.Path]::GetExtension($script:SourcePath).ToLowerInvariant() -eq '.zip') { 2 } else { 1 }
+    if ($urlMode) {
+        $script:WorkRangeStart = 72
+        $script:WorkRangeEnd = 82
+    }
 }
 $script:WorkTotal = [Math]::Max(1, $script:WorkTotal)
 Write-Step ("计划执行 {0} 个主要处理任务" -f $script:WorkTotal)
@@ -1001,6 +1068,7 @@ $report = [ordered]@{
     webGameAnalysis = $script:WebGameAnalysis
     inputUrl = $(if ($urlMode) { $resolvedInput } else { $null })
     buildPlayableWeb = [bool]$BuildPlayableWeb
+    autoUnpackSwf = [bool]$AutoUnpackSwf
     playablePath = $(if ($BuildPlayableWeb) { $script:SourcePath } else { $null })
     downloadedWebResources = $script:DownloadedWebResources
     failedWebResources = $script:FailedWebResources.Count

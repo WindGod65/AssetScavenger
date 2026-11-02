@@ -350,14 +350,14 @@ namespace AndroidGameUnpacker
                 _state.PlannedPhases = profile == "unityproject" ? 2 : 1 + (profile == "full" ? 1 : 0) + (profile == "scan" ? 0 : kinds.Count) + (ordinaryExport && kinds.Contains("models") && modelFormats.Any(delegate(string value) { return value != "obj"; }) ? 1 : 0);
             }
 
-            Thread worker = new Thread(new ThreadStart(delegate { RunJob(script, inputPath, inputUrl, request.BuildPlayableWeb, outputRoot, engine, profile, kinds, modelFormats, request.UnityVersion, request.MaxExportTasks); }));
+            Thread worker = new Thread(new ThreadStart(delegate { RunJob(script, inputPath, inputUrl, request.BuildPlayableWeb, request.AutoUnpackSwf, outputRoot, engine, profile, kinds, modelFormats, request.UnityVersion, request.MaxExportTasks); }));
             worker.IsBackground = true;
             worker.Name = "UnpackPipelineWorker";
             worker.Start();
             return null;
         }
 
-        private void RunJob(string script, string inputPath, string inputUrl, bool buildPlayableWeb, string outputRoot, string engine, string profile, List<string> kinds, List<string> modelFormats, string unityVersion, int maxTasks)
+        private void RunJob(string script, string inputPath, string inputUrl, bool buildPlayableWeb, bool autoUnpackSwf, string outputRoot, string engine, string profile, List<string> kinds, List<string> modelFormats, string unityVersion, int maxTasks)
         {
             try
             {
@@ -367,6 +367,7 @@ namespace AndroidGameUnpacker
                 if (!string.IsNullOrWhiteSpace(inputUrl)) command.Append(" -InputUrl ").Append(PsLiteral(inputUrl));
                 else command.Append(" -InputPath ").Append(PsLiteral(inputPath));
                 if (buildPlayableWeb) command.Append(" -BuildPlayableWeb");
+                if (autoUnpackSwf) command.Append(" -AutoUnpackSwf");
                 command.Append(" -OutputRoot ").Append(PsLiteral(outputRoot));
                 command.Append(" -Engine ").Append(PsLiteral(engine));
                 command.Append(" -Profile ").Append(PsLiteral(profile));
@@ -852,6 +853,7 @@ namespace AndroidGameUnpacker
         public int MaxExportTasks { get; set; }
         public bool ConfirmLargeExport { get; set; }
         public bool BuildPlayableWeb { get; set; }
+        public bool AutoUnpackSwf { get; set; }
     }
 
     internal sealed class PathRequest
