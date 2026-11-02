@@ -45,6 +45,8 @@ Do not place `OutputRoot` inside a directory used as `InputPath`; recursive scan
 - AssetRipper GUI is optional for project reconstruction and may lose type information when IL2CPP metadata is modified.
 - `Umodel_materials.exe` is for Unreal, not Unity. AES handling requires a supplied key.
 - URL web-game mode uses the built-in bounded public-resource mirror. `BuildPlayableWeb` adds `Start-LocalGame.bat`; `failed_resources.json` records HTTP and discovery failures. JPEXS FFDec remains required for ActionScript/resource export from SWF, and Ruffle is needed to play SWF in modern browsers.
+- The 4399 Flash route reads `_strGamePath` from `/flash/<id>.htm`, prefixes `https://sda.4399.com/4399swf`, and skips unrelated portal assets. `tools/WebDownloader/fetch.py` is the Python/OpenSSL fallback when Windows SChannel/WebClient cannot establish HTTPS.
+- AssetRipper, UModel, FFDec 18.0.0, Microsoft OpenJDK 17, and the Python/OpenSSL web fallback are bundled under `tools/AssetRipper`, `tools/UModel`, `tools/FFDec`, `tools/JavaRuntime`, and `tools/Python`. All configured tool paths are relative to the pipeline root, so no desktop, system-wide Java, or system Python installation is required.
 
 ## GUI architecture
 

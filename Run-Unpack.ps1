@@ -453,7 +453,7 @@ function Get-WebGameAnalysis([string]$Root) {
         catch { }
     }
     $combined = $samples -join "`n"
-    $framework = if ($files.Extension -contains '.swf') { 'Flash / ActionScript' }
+    $framework = if (($files.Extension -contains '.swf') -or ($files.Extension -contains '.as')) { 'Flash / ActionScript' }
         elseif (($files.Extension -contains '.wasm') -and ($files.Extension -contains '.data')) { 'Unity WebGL' }
         elseif ($combined -match '(?i)cocos2d|cocos creator|cc\.game|_CCSettings') { 'Cocos Creator / Cocos2d' }
         elseif ($combined -match '(?i)Laya\.|laya\.core|LayaAir|GameConfig') { 'LayaAir' }
@@ -529,16 +529,18 @@ function Get-WebTextEncoding {
 
 function Invoke-PythonWebDownload {
     param([Uri]$Uri, [string]$Target, [string]$Referer)
-    $python = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
+    $bundledPython = Join-Path $script:PipelineRoot 'tools\Python\python.exe'
+    $pythonPath = if (Test-Path -LiteralPath $bundledPython -PathType Leaf) { $bundledPython }
+        else { [string]((Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1).Source) }
     $helper = Join-Path $script:PipelineRoot 'tools\WebDownloader\fetch.py'
-    if (-not $python -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
-        throw 'Windows HTTPS 下载失败，且未找到 Python 后备下载器。请安装 Python 3，或改为导入已下载的本地网页游戏包。'
+    if ([string]::IsNullOrWhiteSpace($pythonPath) -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        throw 'Windows HTTPS 下载失败，且内置 Python 后备下载器不可用。请修复 tools\Python，或改为导入已下载的本地网页游戏包。'
     }
     if (-not $script:UsedPythonWebFallback) {
         Write-Step 'Windows HTTPS 通道不可用，已自动切换到 Python/OpenSSL 后备下载器'
         $script:UsedPythonWebFallback = $true
     }
-    & $python.Source $helper '--url' $Uri.AbsoluteUri '--output' $Target '--referer' $Referer
+    & $pythonPath $helper '--url' $Uri.AbsoluteUri '--output' $Target '--referer' $Referer
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Target -PathType Leaf)) {
         throw "Python 后备下载失败，退出码 $LASTEXITCODE"
     }
@@ -547,6 +549,27 @@ function Invoke-PythonWebDownload {
 function Invoke-WebGameDownload {
     param([Uri]$Uri, [string]$Destination)
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $is4399GamePage = $Uri.Host -match '(?i)(^|\.)4399\.com$' -and $Uri.AbsolutePath -match '^/flash/\d+(?:_\d+)?\.htm$'
+    if ($is4399GamePage) {
+        $bundledPython = Join-Path $script:PipelineRoot 'tools\Python\python.exe'
+        $pythonPath = if (Test-Path -LiteralPath $bundledPython -PathType Leaf) { $bundledPython }
+            else { [string]((Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1).Source) }
+        $helper = Join-Path $script:PipelineRoot 'tools\WebSWF\fetch_4399_swf.py'
+        if ([string]::IsNullOrWhiteSpace($pythonPath) -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+            throw '缺少内置 4399 SWF 获取组件。请检查 tools\Python 和 tools\WebSWF。'
+        }
+        Write-ProgressStep -Percent 18 -Message '正在定位 4399 真实游戏入口......' -Location 'Invoke-WebGameDownload'
+        Write-Step '已启用 4399 SWF 直取：只下载当前游戏的 SWF 依赖，不抓取门户、广告或推荐内容。'
+        & $pythonPath -X utf8 $helper '--url' $Uri.AbsoluteUri '--output' $Destination
+        if ($LASTEXITCODE -ne 0) { throw "4399 SWF 获取失败，退出码 $LASTEXITCODE" }
+        $manifestPath = Join-Path $Destination 'manifest.json'
+        $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
+        $script:DownloadedWebResources = @($manifest.swf_files).Count
+        Remove-Item -LiteralPath $manifestPath -Force
+        Write-ProgressStep -Percent 68 -Message "SWF 获取完成：$($script:DownloadedWebResources) 个文件" -Location 'Invoke-WebGameDownload'
+        $script:Warnings.Add('SWF 已直接保存到导出任务文件夹；game.swf 通常是核心玩法。')
+        return $Destination
+    }
     $queue = New-Object 'System.Collections.Generic.Queue[object]'
     $queue.Enqueue([pscustomobject]@{ uri = $Uri; entry = $true; referer = $Uri.AbsoluteUri })
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -623,14 +646,17 @@ function Invoke-WebGameDownload {
 
 function New-WebPlayableLauncher {
     param([string]$Root)
+    $bundledPython = Join-Path $script:PipelineRoot 'tools\Python\python.exe'
     $batch = @(
-        '@echo off', 'cd /d "%~dp0"', 'where py >nul 2>nul',
+        '@echo off', 'chcp 65001 >nul', 'cd /d "%~dp0"', ('set "BUNDLED_PYTHON={0}"' -f $bundledPython),
+        'if exist "%BUNDLED_PYTHON%" (start "" http://127.0.0.1:18766/ & "%BUNDLED_PYTHON%" -m http.server 18766 --bind 127.0.0.1 --directory "%~dp0" & exit /b)',
+        'where py >nul 2>nul',
         'if %errorlevel%==0 (start "" http://127.0.0.1:18766/ & py -3 -m http.server 18766 --bind 127.0.0.1 --directory "%~dp0" & exit /b)',
         'where python >nul 2>nul',
         'if %errorlevel%==0 (start "" http://127.0.0.1:18766/ & python -m http.server 18766 --bind 127.0.0.1 --directory "%~dp0" & exit /b)',
-        'echo Python 3 was not found. Install Python or use another local HTTP server.', 'pause'
+        'echo Bundled Python was not found. Repair AssetScavenger tools or use another local HTTP server.', 'pause'
     )
-    $batch | Set-Content -LiteralPath (Join-Path $Root 'Start-LocalGame.bat') -Encoding ASCII
+    [IO.File]::WriteAllLines((Join-Path $Root 'Start-LocalGame.bat'), $batch, (New-Object Text.UTF8Encoding($false)))
     $script:Warnings.Add('本地版本必须通过 Start-LocalGame.bat 的 HTTP 服务启动，不能直接双击 index.html。复杂异步加载、跨域接口、登录或服务端依赖可能仍无法离线运行。')
     if (Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.swf' -ErrorAction SilentlyContinue) {
         $script:Warnings.Add('本地版本包含 SWF；现代浏览器不能直接播放，需要 Ruffle。当前流水线未内置 Ruffle 时只保留 SWF 和 FFDec 分析结果。')
@@ -657,8 +683,7 @@ function Export-WebGameAssets {
             foreach ($swf in $swfFiles) {
                 $target = Join-Path $ffdecOutput (Get-SafeName $swf.BaseName)
                 New-Item -ItemType Directory -Path $target -Force | Out-Null
-                [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-export', 'all', $target, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}.log" -f (Get-SafeName $swf.BaseName))) -Name ("FFDec 导出 {0}" -f $swf.Name))
-                Copy-WebGameFiles -Root $target
+                [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-export', 'all', $target, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}.log" -f (Get-SafeName $swf.BaseName))) -Name ("FFDec 导出 {0}" -f $swf.Name))
             }
             $webRoot = $ffdecOutput
         }
@@ -681,7 +706,7 @@ function Export-WebGameAssets {
         $script:WebGameAnalysis = Get-WebGameAnalysis -Root $analysisRoot
     }
     $script:WebFramework = [string]$script:WebGameAnalysis.framework
-    if ([int]$script:WebGameAnalysis.scripts -gt 0 -and [int]$script:WebGameAnalysis.sourceMaps -eq 0) {
+    if ($script:WebFramework -notmatch 'Flash' -and [int]$script:WebGameAnalysis.scripts -gt 0 -and [int]$script:WebGameAnalysis.sourceMaps -eq 0) {
         $script:Warnings.Add('检测到客户端脚本但没有 sourcemap；导出的可能是压缩/混淆后的发布代码，不等于原始可编译源码。')
     }
     if ($script:WebFramework -match 'Unity WebGL') {
@@ -737,7 +762,10 @@ function Test-ExportedFiles {
         $status = 'ok'
         $detail = '非空文件'
         try {
-            if ($file.Length -eq 0) { throw '文件大小为 0' }
+            if ($file.Length -eq 0) {
+                if ($file.Extension.ToLowerInvariant() -eq '.as') { $detail = '空 ActionScript 动作（FFDec 合法占位文件）' }
+                else { throw '文件大小为 0' }
+            }
             switch ($file.Extension.ToLowerInvariant()) {
                 '.png' {
                     $head = Get-FilePrefix $file.FullName 8
@@ -825,6 +853,17 @@ $suffix = 1
 while (Test-Path -LiteralPath $script:JobRoot) {
     $script:JobRoot = Join-Path $OutputRoot ("{0}_{1}" -f $jobName, $suffix)
     $suffix++
+}
+
+$isDirect4399 = $urlMode -and $parsedInputUrl.Host -match '(?i)(^|\.)4399\.com$' -and $parsedInputUrl.AbsolutePath -match '^/flash/\d+(?:_\d+)?\.htm$'
+if ($isDirect4399) {
+    New-Item -ItemType Directory -Path $script:JobRoot -Force | Out-Null
+    Write-ProgressStep -Percent 2 -Message "已创建 SWF 导出文件夹：$($script:JobRoot)"
+    $script:SourcePath = Invoke-WebGameDownload -Uri $parsedInputUrl -Destination $script:JobRoot
+    Write-ProgressStep -Percent 100 -Message "SWF 直取完成：$($script:DownloadedWebResources) 个文件，失败 $($script:FailedWebResources.Count)"
+    Write-Host "SWF 文件夹：$($script:JobRoot)"
+    Write-Output $script:JobRoot
+    return
 }
 
 $script:ReportDir = Join-Path $script:JobRoot '00_report'

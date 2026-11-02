@@ -1,0 +1,6 @@
+jobs/
+*.log
+**/__pycache__/
+*.pyc
+*.pyo
+tools/Python/Lib/test/

@@ -126,11 +126,14 @@ Unreal 加密 PAK 必须由你提供合法获得的 AES key：
 - **MeshFormatConverter / Assimp**：将有效 OBJ 批量转换为用户选择的 FBX 和 glTF 2.0；输出仍保留 AssetName、PathID 和相对目录。
 - **AssetRipper**：“重建 Unity 工程”模式的自动后端。适合需要 Prefab、场景和 Unity 工程结构时使用；普通图片、音频和模型批量导出仍优先使用标准模式。
 - **UModel / UE Viewer**：只处理 Unreal Engine，不处理 Unity。可导出贴图、音频、骨骼模型和动画。
-- **JPEXS FFDec**：处理 Flash SWF，导出 ActionScript、图片、声音、形状与字体。默认路径为 `tools\FFDec\ffdec.bat`。因当前 GitHub 二进制下载通道超时，便携包没有随本次构建写入；从[官方 Release](https://github.com/jindrapetrik/jpexs-decompiler/releases)解压到该目录后即可自动启用，流水线会在缺失时明确报出未解决问题。
+- **JPEXS FFDec**：处理 Flash SWF，导出 ActionScript、图片、声音、形状与字体。当前已接入 FFDec 18.0.0，位于 `tools\FFDec`；`ffdec-pipeline.bat` 使用内置于 `tools\JavaRuntime` 的 Microsoft OpenJDK 17 LTS，不需要系统安装 Java。
+- **Python / OpenSSL**：精简运行时位于 `tools\Python`，供 HTTPS 后备下载器和本地网页游戏 HTTP 启动器使用，不依赖系统 Python。
 
 ## 网页小游戏与玩法逻辑
 
 网页小游戏页允许纯小白直接粘贴一个公开游戏页面 URL；不知道 SWF 在哪里也没关系。内置下载器会从入口页面寻找公开引用的 iframe、SWF、脚本、样式、图片、音频和 Unity WebGL 数据，并在 `09_web_game\downloaded` 中建立镜像。也可以继续选择已经合法取得的本地文件。
+
+4399 的 `/flash/数字.htm` 页面会使用专用解析，只读取页面中的 `_strGamePath` 并从 `https://sda.4399.com/4399swf` 获取真实 SWF，避免把推荐游戏、广告和门户公共资源一起下载。若 Windows PowerShell 的 HTTPS/SChannel 不可用，流水线会自动调用 `tools\WebDownloader\fetch.py`，通过本机 Python 3/OpenSSL 下载公开资源。
 
 打开“生成本地可玩版本”后，输出位于 `09_web_game\playable`，双击其中的 `Start-LocalGame.bat` 会通过本机 HTTP 服务启动。复杂异步加载、跨域接口、登录、旧插件、服务端依赖或 Ruffle 不兼容仍可能导致离线版不能运行；失败 URL 会写入 `failed_resources.json`，页面的“本次失败与限制”会显示原因和建议。
 
