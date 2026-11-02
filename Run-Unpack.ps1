@@ -7,6 +7,7 @@ param(
     [switch]$BuildPlayableWeb,
     [Alias('ExportFlashProject')]
     [switch]$AutoUnpackSwf,
+    [switch]$ConvertFlashSvgToPng,
 
     [ValidateSet('auto', 'unity', 'unreal', 'web', 'unknown')]
     [string]$Engine = 'auto',
@@ -682,7 +683,8 @@ function Export-FlashSwfPackages {
     }
 
     New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
-    $script:WorkTotal = [Math]::Max($script:WorkTotal, $script:WorkIndex + ($SwfFiles.Count * 3))
+    $workPerSwf = if ($ConvertFlashSvgToPng) { 4 } else { 3 }
+    $script:WorkTotal = [Math]::Max($script:WorkTotal, $script:WorkIndex + ($SwfFiles.Count * $workPerSwf))
     $previousAppData = $env:APPDATA
     $targets = New-Object System.Collections.Generic.List[string]
     try {
@@ -693,13 +695,35 @@ function Export-FlashSwfPackages {
             $target = Join-Path $OutputRoot ("{0}_解包" -f $safeBaseName)
             $original = Join-Path $target 'original_swf'
             $resources = Join-Path $target 'resources'
+            $pngVisuals = Join-Path $target 'png_visuals'
             $fla = Join-Path $target 'fla'
             $xfl = Join-Path $target 'xfl'
             @($original, $resources, $fla, $xfl) | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
             Copy-Item -LiteralPath $swf.FullName -Destination (Join-Path $original $swf.Name) -Force
-            [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'script:as,image:png_gif_jpeg,sound:mp3_wav,font:ttf,text:plain', '-export', 'script,image,sound,font,text,symbolClass,binaryData', $resources, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_resources.log" -f $safeBaseName)) -Name ("FFDec 源码与资源 {0}" -f $swf.Name))
+            [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'script:as,image:png_gif_jpeg,shape:svg,morphshape:svg,button:svg,sound:mp3_wav,font:ttf,text:plain', '-export', 'script,image,shape,morphshape,button,sound,font,text,symbolClass,binaryData', $resources, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_resources.log" -f $safeBaseName)) -Name ("FFDec 源码与完整视觉资源 {0}" -f $swf.Name))
+            if ($ConvertFlashSvgToPng) {
+                New-Item -ItemType Directory -Path $pngVisuals -Force | Out-Null
+                [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'shape:png,button:png', '-export', 'shape,button', $pngVisuals, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_png.log" -f $safeBaseName)) -Name ("FFDec SVG 对应 PNG {0}" -f $swf.Name))
+            }
             [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'fla:cs6', '-export', 'fla', $fla, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_fla.log" -f $safeBaseName)) -Name ("FFDec FLA 工程 {0}" -f $swf.Name))
             [void](Invoke-LoggedTool -FilePath $script:FFDec -Arguments @('-cli', '-onerror', 'ignore', '-format', 'xfl:cs6', '-export', 'xfl', $xfl, $swf.FullName) -LogPath (Join-Path $script:Logs ("ffdec_{0}_xfl.log" -f $safeBaseName)) -Name ("FFDec XFL 工程 {0}" -f $swf.Name))
+            $inventory = [ordered]@{
+                source = $swf.Name
+                bitmapImages = @(Get-ChildItem -LiteralPath (Join-Path $resources 'images') -Recurse -File -ErrorAction SilentlyContinue).Count
+                vectorShapes = @(Get-ChildItem -LiteralPath (Join-Path $resources 'shapes') -Recurse -File -ErrorAction SilentlyContinue).Count
+                morphShapes = @(Get-ChildItem -LiteralPath (Join-Path $resources 'morphshapes') -Recurse -File -ErrorAction SilentlyContinue).Count
+                buttons = @(Get-ChildItem -LiteralPath (Join-Path $resources 'buttons') -Recurse -File -ErrorAction SilentlyContinue).Count
+                pngShapes = @(Get-ChildItem -LiteralPath (Join-Path $pngVisuals 'shapes') -Recurse -File -ErrorAction SilentlyContinue).Count
+                pngButtons = @(Get-ChildItem -LiteralPath (Join-Path $pngVisuals 'buttons') -Recurse -File -ErrorAction SilentlyContinue).Count
+                scripts = @(Get-ChildItem -LiteralPath (Join-Path $resources 'scripts') -Recurse -File -ErrorAction SilentlyContinue).Count
+                sounds = @(Get-ChildItem -LiteralPath (Join-Path $resources 'sounds') -Recurse -File -ErrorAction SilentlyContinue).Count
+                fonts = @(Get-ChildItem -LiteralPath (Join-Path $resources 'fonts') -Recurse -File -ErrorAction SilentlyContinue).Count
+                texts = @(Get-ChildItem -LiteralPath (Join-Path $resources 'texts') -Recurse -File -ErrorAction SilentlyContinue).Count
+                flaFiles = @(Get-ChildItem -LiteralPath $fla -Recurse -File -Filter '*.fla' -ErrorAction SilentlyContinue).Count
+                xflDocuments = @(Get-ChildItem -LiteralPath $xfl -Recurse -File -Filter 'DOMDocument.xml' -ErrorAction SilentlyContinue).Count
+            }
+            $inventory['totalVisualResources'] = $inventory.bitmapImages + $inventory.vectorShapes + $inventory.morphShapes + $inventory.buttons
+            $inventory | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $target '解包清单.json') -Encoding UTF8
             $targets.Add($target)
         }
     }
@@ -726,7 +750,7 @@ function Export-WebGameAssets {
         if (Test-Path -LiteralPath $script:FFDec -PathType Leaf) {
             $ffdecOutput = Join-Path $script:WebRaw 'ffdec'
             [void](Export-FlashSwfPackages -SwfFiles $swfFiles -OutputRoot $ffdecOutput)
-            $script:Warnings.Add('Flash 复刻工程包已生成：original_swf 保留原文件，resources 包含 ActionScript 与素材，fla/xfl 用于查看时间轴和元件结构。反编译代码不是作者原始工程，仍可能需要手工修复。')
+            $script:Warnings.Add('Flash 复刻工程包已生成：resources 包含位图、SVG 矢量图形、MorphShape、按钮、ActionScript 与音频等素材；fla/xfl 保留 Sprite 时间轴和元件结构。反编译代码不是作者原始工程，仍可能需要手工修复。')
             $webRoot = $ffdecOutput
         }
         else {
@@ -1069,6 +1093,7 @@ $report = [ordered]@{
     inputUrl = $(if ($urlMode) { $resolvedInput } else { $null })
     buildPlayableWeb = [bool]$BuildPlayableWeb
     autoUnpackSwf = [bool]$AutoUnpackSwf
+    convertFlashSvgToPng = [bool]$ConvertFlashSvgToPng
     playablePath = $(if ($BuildPlayableWeb) { $script:SourcePath } else { $null })
     downloadedWebResources = $script:DownloadedWebResources
     failedWebResources = $script:FailedWebResources.Count

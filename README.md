@@ -95,7 +95,9 @@ Unreal 加密 PAK 必须由你提供合法获得的 AES key：
 - Flash `.swf`
 - HTML5 网页游戏 `.zip`、`.html` 或目录
 
-网页小游戏页面提供“自动解包 SWF 文件”开关。开启后会保留原始 SWF，明确调用内置 FFDec，并在任务目录中为每个 SWF 建立独立的“文件名_解包”文件夹，导出 ActionScript 源码、图片、声音、字体、文本、类映射、FLA 和 XFL；关闭后，4399 Flash 地址只获取 SWF。
+网页小游戏页面提供“自动解包 SWF 文件”开关。开启后会保留原始 SWF，明确调用内置 FFDec，并在任务目录中为每个 SWF 建立独立的“文件名_解包”文件夹，导出 ActionScript 源码、位图、SVG Shape、MorphShape、按钮、声音、字体、文本、类映射、FLA、XFL 和 `解包清单.json`；关闭后，4399 Flash 地址只获取 SWF。
+
+勾选“同时生成 PNG”后，SVG 原始文件仍会保留，FFDec 会把 Shape 和按钮额外渲染到 `png_visuals`。MorphShape 是动态变形矢量，FFDec 18 不支持直接导出为静态 PNG，仍通过 SVG、FLA 和 XFL 保留。
 - Cocos Creator、LayaAir、Egret、Construct、Phaser、PixiJS、Unity WebGL 发布包
 
 ## 本地技能
@@ -128,7 +130,7 @@ Unreal 加密 PAK 必须由你提供合法获得的 AES key：
 - **MeshFormatConverter / Assimp**：将有效 OBJ 批量转换为用户选择的 FBX 和 glTF 2.0；输出仍保留 AssetName、PathID 和相对目录。
 - **AssetRipper**：“重建 Unity 工程”模式的自动后端。适合需要 Prefab、场景和 Unity 工程结构时使用；普通图片、音频和模型批量导出仍优先使用标准模式。
 - **UModel / UE Viewer**：只处理 Unreal Engine，不处理 Unity。可导出贴图、音频、骨骼模型和动画。
-- **JPEXS FFDec**：处理 Flash SWF。复刻工程包采用选择性导出，生成 ActionScript、原始图片/声音、字体、文本、类映射以及 FLA/XFL，不再默认把所有 Shape、Sprite 和 Frame 渲染成海量逐帧文件。当前已接入 FFDec 18.0.0，位于 `tools\FFDec`；`ffdec-pipeline.bat` 使用内置于 `tools\JavaRuntime` 的 Microsoft OpenJDK 17 LTS，不需要系统安装 Java。
+- **JPEXS FFDec**：处理 Flash SWF。自动解包会导出 ActionScript、位图、SVG Shape、MorphShape、按钮、声音、字体、文本、类映射以及 FLA/XFL。Sprite 时间轴由 FLA/XFL 保留，不默认渲染成海量逐帧 PNG。当前已接入 FFDec 18.0.0，位于 `tools\FFDec`；`ffdec-pipeline.bat` 使用内置于 `tools\JavaRuntime` 的 Microsoft OpenJDK 17 LTS，不需要系统安装 Java。
 - **Python / OpenSSL**：精简运行时位于 `tools\Python`，供 HTTPS 后备下载器和本地网页游戏 HTTP 启动器使用，不依赖系统 Python。
 
 ## 网页小游戏与玩法逻辑
