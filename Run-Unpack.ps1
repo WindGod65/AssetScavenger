@@ -105,12 +105,25 @@ function Invoke-LoggedTool {
 
     Start-WorkItem -Message $Name
     $oldLocation = Get-Location
+    $previousErrorAction = $ErrorActionPreference
+    $writer = $null
     try {
         Set-Location -LiteralPath (Split-Path -Parent $LogPath)
-        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath | ForEach-Object { Write-Host $_ }
+        $writer = New-Object IO.StreamWriter($LogPath, $false, (New-Object Text.UTF8Encoding($false)))
+        # Windows PowerShell converts native stderr into ErrorRecord objects.
+        # FFDec diagnostics must not terminate the entire export pipeline.
+        $ErrorActionPreference = 'Continue'
+        & $FilePath @Arguments 2>&1 | ForEach-Object {
+            $line = [string]$_
+            $writer.WriteLine($line)
+            $writer.Flush()
+            Write-Host $line
+        }
         $exitCode = $LASTEXITCODE
     }
     finally {
+        $ErrorActionPreference = $previousErrorAction
+        if ($writer) { $writer.Dispose() }
         Set-Location -LiteralPath $oldLocation
     }
 
@@ -715,6 +728,18 @@ function Export-FlashSwfPackages {
         $env:APPDATA = Join-Path $script:Logs 'ffdec_appdata'
         New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
         foreach ($swf in $SwfFiles) {
+            $prefix = Get-FilePrefix -Path $swf.FullName -Count 8
+            $signature = if ($prefix.Length -ge 3) { [Text.Encoding]::ASCII.GetString($prefix, 0, 3) } else { '' }
+            $invalid = $prefix.Length -lt 8 -or $signature -notin @('FWS', 'CWS', 'ZWS')
+            if (-not $invalid) {
+                $declaredLength = [BitConverter]::ToUInt32($prefix, 4)
+                $invalid = $declaredLength -lt 8 -or ($signature -eq 'FWS' -and $declaredLength -gt $swf.Length)
+            }
+            if ($invalid) {
+                $script:Issues.Add("跳过无效或截断的 SWF：$($swf.Name)；原始文件保留，未解包。")
+                Write-Step "跳过无效或截断的 SWF：$($swf.Name)，继续处理其他文件"
+                continue
+            }
             $safeBaseName = Get-SafeName $swf.BaseName
             $target = Join-Path $OutputRoot ("{0}_解包" -f $safeBaseName)
             $original = Join-Path $target 'original_swf'
@@ -753,6 +778,9 @@ function Export-FlashSwfPackages {
     }
     finally {
         $env:APPDATA = $previousAppData
+        if ($script:Issues.Count -gt 0) {
+            $script:Issues | Set-Content -LiteralPath (Join-Path $OutputRoot 'export_issues.txt') -Encoding UTF8
+        }
     }
     return $targets.ToArray()
 }

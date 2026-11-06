@@ -6,5 +6,5 @@ if not exist "%JAVA_EXE%" (
   exit /b 2
 )
 set "VLC_VERBOSE=-1"
-"%JAVA_EXE%" -Xmx1024m -Djna.nosys=true -jar "%~dp0ffdec.jar" %*
+"%JAVA_EXE%" -Xmx1024m -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Djna.nosys=true -jar "%~dp0ffdec.jar" %*
 exit /b %ERRORLEVEL%

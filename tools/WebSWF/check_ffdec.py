@@ -38,6 +38,7 @@ def resolve(root):
                 raise ValueError('Missing ffdec.jar')
             launcher.write_bytes(b'@echo off\r\n"%~dp0..\\..\\..\\JavaRuntime\\bin\\java.exe" -Xmx1024m -Djna.nosys=true -jar "%~dp0ffdec.jar" %*\r\nexit /b %ERRORLEVEL%\r\n')
             (target / 'ready.json').write_text(json.dumps({'version': version, 'sha256': digest.hexdigest()}), encoding='utf-8')
+        launcher.write_bytes(b'@echo off\r\n"%~dp0..\\..\\..\\JavaRuntime\\bin\\java.exe" -Xmx1024m -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Djna.nosys=true -jar "%~dp0ffdec.jar" %*\r\nexit /b %ERRORLEVEL%\r\n')
         print(f'[FFDec] 官方最新版本 {version} 已就绪')
         return launcher
     except Exception as error:
