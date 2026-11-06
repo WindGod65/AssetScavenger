@@ -125,6 +125,41 @@ namespace AndroidGameUnpacker
         private readonly string _token;
         private PipelineState _state;
         private string _diagnosedUrl = "", _diagnosis = "unknown";
+        private Process _ieDriver;
+        private string _ieSession;
+        private int _iePort;
+        private bool _ieVerified;
+        private readonly object _ieSync = new object();
+        private readonly HashSet<int> _ieGameProcesses = new HashSet<int>();
+
+        private object IeCommand(string method, string path, object payload)
+        {
+            var request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + _iePort + path);
+            request.Proxy = null;
+            request.KeepAlive = false;
+            request.ServicePoint.Expect100Continue = false;
+            request.Method = method;
+            request.Timeout = 45000;
+            request.ReadWriteTimeout = 45000;
+            if (payload != null)
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(_json.Serialize(payload));
+                request.ContentType = "application/json; charset=utf-8";
+                request.ContentLength = bytes.Length;
+                using (var stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
+            }
+            WebResponse response;
+            try { response = request.GetResponse(); }
+            catch (WebException error)
+            {
+                if (error.Response == null) throw new InvalidOperationException("IE 自动化通信中断（" + method + " " + path + "）：" + error.Message, error);
+                using (var reader = new StreamReader(error.Response.GetResponseStream(), Encoding.UTF8))
+                    throw new InvalidOperationException("Edge IE 模式启动失败：" + reader.ReadToEnd());
+            }
+            using (response)
+            using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                return _json.DeserializeObject(reader.ReadToEnd());
+        }
 
         private object Diagnose(string input)
         {
@@ -150,11 +185,53 @@ namespace AndroidGameUnpacker
             string edge = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft/Edge/Application/msedge.exe");
             if (!File.Exists(edge)) edge = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft/Edge/Application/msedge.exe");
             if (!File.Exists(edge)) throw new InvalidOperationException("未找到 Microsoft Edge。");
-            // An external launch of the game URL creates a normal Edge tab.
-            // Start at the user's IE-mode homepage instead; navigation to the
-            // game must happen inside that same tab to retain compatibility.
-            string entry = gameUrl.Host == "4399.com" || gameUrl.Host.EndsWith(".4399.com") ? "https://www.4399.com/" : gameUrl.AbsoluteUri;
-            Process.Start(new ProcessStartInfo(edge, "\"" + entry.Replace("\"", "%22") + "\"") { UseShellExecute = true });
+            lock (_ieSync)
+            {
+                if (_ieDriver == null || _ieDriver.HasExited)
+                {
+                    string driver = Path.Combine(_baseDirectory, "tools/IEDriver/x64/IEDriverServer.exe");
+                    if (!File.Exists(driver)) throw new InvalidOperationException("缺少内置 IE 自动化组件 tools/IEDriver/IEDriverServer.exe。");
+                    var listener = new TcpListener(IPAddress.Loopback, 0);
+                    listener.Start(); _iePort = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+                    _ieDriver = Process.Start(new ProcessStartInfo(driver, "/host=127.0.0.1 /port=" + _iePort + " /silent /log-level=FATAL") { UseShellExecute = false, CreateNoWindow = true });
+                    _ieSession = null;
+                    _ieVerified = false;
+                    bool ready = false;
+                    for (int i = 0; i < 50; i++)
+                    {
+                        if (_ieDriver.HasExited) break;
+                        try { IeCommand("GET", "/status", null); ready = true; break; } catch { Thread.Sleep(100); }
+                    }
+                    if (!ready) throw new InvalidOperationException("IE 自动化组件未能启动，请重新尝试。");
+                }
+                if (_ieSession == null)
+                {
+                    var previousProcesses = new HashSet<int>(Process.GetProcessesByName("iexplore").Select(p => p.Id));
+                    // Skip the driver's legacy IE-zone preflight without
+                    // changing or disabling Windows Protected Mode itself.
+                    var options = new Dictionary<string, object> { { "ie.edgechromium", true }, { "ie.edgepath", edge }, { "ignoreProtectedModeSettings", true } };
+                    var caps = new Dictionary<string, object> { { "browserName", "internet explorer" }, { "pageLoadStrategy", "none" }, { "se:ieOptions", options } };
+                    var result = (Dictionary<string, object>)IeCommand("POST", "/session", new { capabilities = new { alwaysMatch = caps } });
+                    var value = (Dictionary<string, object>)result["value"];
+                    _ieSession = Convert.ToString(value["sessionId"]);
+                    _ieGameProcesses.Clear();
+                    foreach (var process in Process.GetProcessesByName("iexplore"))
+                        if (!previousProcesses.Contains(process.Id)) _ieGameProcesses.Add(process.Id);
+                }
+                try
+                {
+                    // Verify the IE engine on the initial document. Injecting
+                    // script into a running Flash page can crash legacy IEDriver.
+                    if (!_ieVerified)
+                    {
+                        var result = (Dictionary<string, object>)IeCommand("POST", "/session/" + _ieSession + "/execute/sync", new { script = "return document.documentMode || 0;", args = new object[0] });
+                        if (Convert.ToInt32(result["value"]) <= 0) throw new InvalidOperationException("未能建立 IE 模式会话，未启动采集。");
+                        _ieVerified = true;
+                    }
+                    IeCommand("POST", "/session/" + _ieSession + "/url", new { url = gameUrl.AbsoluteUri });
+                }
+                catch { _ieSession = null; _ieVerified = false; throw; }
+            }
         }
 
         private static bool HasFlash(Process process)
@@ -166,6 +243,8 @@ namespace AndroidGameUnpacker
         private int FindGameProcess()
         {
             var candidates = Process.GetProcessesByName("iexplore").Where(HasFlash).ToArray();
+            var owned = candidates.Where(p => _ieGameProcesses.Contains(p.Id)).ToArray();
+            if (owned.Length == 1) return owned[0].Id;
             if (candidates.Length == 1) return candidates[0].Id;
             if (candidates.Length > 1) throw new InvalidOperationException("检测到多个 Flash 游戏进程。请关闭其他 Flash 游戏后重试，或使用备用进程选择。 ");
             throw new InvalidOperationException("尚未检测到已加载 Flash 的游戏进程。请进入实际关卡；也可使用你已验证可玩的 Edge IE 模式打开游戏，再点击采集。 ");
@@ -744,6 +823,7 @@ namespace AndroidGameUnpacker
         public void Dispose()
         {
             _disposed = true;
+            try { if (_ieDriver != null && !_ieDriver.HasExited) _ieDriver.Kill(); } catch { }
             try { _listener.Stop(); } catch { }
         }
     }
