@@ -114,15 +114,18 @@ def safe_name(url, used_names):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--output", default="")
     parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or not (parsed.hostname == "4399.com" or parsed.hostname.endswith(".4399.com")):
         raise ValueError("需要输入公开的 4399 游戏页面地址")
 
-    swf_dir = os.path.abspath(args.output)
-    os.makedirs(swf_dir, exist_ok=True)
+    if not args.probe and not args.output:
+        raise ValueError("下载时需要指定输出目录")
+    swf_dir = os.path.abspath(args.output) if args.output else ""
+    if not args.probe:
+        os.makedirs(swf_dir, exist_ok=True)
     queue = deque([(args.url, args.url)])
     seen, used_names = set(), set()
     swf_files, failures, html_pages = [], [], []
@@ -160,6 +163,8 @@ def main():
                 print(f"[PAGE] {final_url}", flush=True)
                 if re.search(r'game_url_arr\s*\[', content):
                     print("[DETECT:MEMORY] 检测到多阶段游戏加载入口；直取可能仅包含菜单或加载器。请打开游戏、进入关卡后确认开始内存采集。", flush=True)
+                    if args.probe:
+                        return
                     with open(os.path.join(swf_dir, "manifest.json"), "w", encoding="utf-8") as output:
                         json.dump({"source_url": args.url, "requires_memory": True,
                                    "swf_files": [], "html_pages": html_pages, "failures": failures}, output, ensure_ascii=False, indent=2)
@@ -174,6 +179,9 @@ def main():
                              "reason": f"{type(error).__name__}: {error}"})
             print(f"[FAILED] {normalized}: {error}", flush=True)
 
+    if args.probe:
+        print("[DETECT:UNKNOWN] 暂时无法判定获取方式，请检查网络后重新检测；尚未开放采集。", flush=True)
+        return
     manifest = {"source_url": args.url, "html_pages": html_pages,
                 "swf_files": swf_files, "failures": failures}
     with open(os.path.join(swf_dir, "manifest.json"), "w", encoding="utf-8", newline="\n") as output:

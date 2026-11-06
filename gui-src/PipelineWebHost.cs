@@ -31,26 +31,6 @@ namespace AndroidGameUnpacker
         [STAThread]
         private static void Main(string[] args)
         {
-            if (args != null && args.Length == 2 && args[0] == "--flash-browser")
-            {
-                Uri game;
-                if (!Uri.TryCreate(args[1], UriKind.Absolute, out game) || (game.Scheme != "http" && game.Scheme != "https")) return;
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-                try
-                {
-                    using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION"))
-                        key.SetValue(Path.GetFileName(Application.ExecutablePath), 11001, Microsoft.Win32.RegistryValueKind.DWord);
-                    Form window = new Form { Text = "Flash 游戏窗口 · IE 内核 · 进入关卡后返回控制台点击开始采集", Width = 1100, Height = 820 };
-                    Label notice = new Label { Dock = DockStyle.Top, Height = 54, BackColor = Color.FromArgb(255, 226, 153), Text = "请先进入游戏并加载关卡，再返回资源清道夫点击【我已进入游戏，开始采集】。\n本窗口使用 IE 内核；如果 Flash 未能加载，请继续使用你已验证可玩的 Edge IE 模式。" };
-                    WebBrowser browser = new WebBrowser { Dock = DockStyle.Fill, ScriptErrorsSuppressed = true };
-                    window.Controls.Add(browser); window.Controls.Add(notice);
-                    browser.Navigate(game);
-                    Application.Run(window);
-                }
-                catch (Exception ex) { MessageBox.Show("IE 游戏窗口无法启动：" + ex.Message); }
-                return;
-            }
             bool noBrowser = args != null && args.Any(delegate(string value) { return string.Equals(value, "--no-browser", StringComparison.OrdinalIgnoreCase); });
             bool created;
             _singleInstance = new Mutex(true, "Local\\AndroidGameUnpackerPipeline", out created);
@@ -144,7 +124,38 @@ namespace AndroidGameUnpacker
         private readonly object _sync = new object();
         private readonly string _token;
         private PipelineState _state;
-        private Process _gameBrowser;
+        private string _diagnosedUrl = "", _diagnosis = "unknown";
+
+        private object Diagnose(string input)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(input, UriKind.Absolute, out uri) || (uri.Scheme != "http" && uri.Scheme != "https") || !(uri.Host == "4399.com" || uri.Host.EndsWith(".4399.com")))
+                throw new InvalidOperationException("请输入有效的 4399 游戏网址。");
+            var start = new ProcessStartInfo(Path.Combine(_baseDirectory, "tools/Python/python.exe"), "-X utf8 \"" + Path.Combine(_baseDirectory, "tools/WebSWF/fetch_4399_swf.py") + "\" --probe --url \"" + uri.AbsoluteUri.Replace("\"", "%22") + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
+            lock (_sync) { _diagnosedUrl = ""; _diagnosis = "unknown"; }
+            using (var process = Process.Start(start))
+            {
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(90000)) { process.Kill(); throw new InvalidOperationException("检测超时，请重试。"); }
+                string output = stdout.Result + stderr.Result;
+                string mode = output.Contains("[DETECT:MEMORY]") ? "memory" : output.Contains("[DETECT:DIRECT]") ? "direct" : "unknown";
+                lock (_sync) { _diagnosedUrl = uri.AbsoluteUri; _diagnosis = mode; }
+                return new { ok = true, mode = mode, detail = output };
+            }
+        }
+
+        private void OpenEdgeGame(Uri gameUrl)
+        {
+            string edge = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft/Edge/Application/msedge.exe");
+            if (!File.Exists(edge)) edge = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft/Edge/Application/msedge.exe");
+            if (!File.Exists(edge)) throw new InvalidOperationException("未找到 Microsoft Edge。");
+            // An external launch of the game URL creates a normal Edge tab.
+            // Start at the user's IE-mode homepage instead; navigation to the
+            // game must happen inside that same tab to retain compatibility.
+            string entry = gameUrl.Host == "4399.com" || gameUrl.Host.EndsWith(".4399.com") ? "https://www.4399.com/" : gameUrl.AbsoluteUri;
+            Process.Start(new ProcessStartInfo(edge, "\"" + entry.Replace("\"", "%22") + "\"") { UseShellExecute = true });
+        }
 
         private static bool HasFlash(Process process)
         {
@@ -154,7 +165,6 @@ namespace AndroidGameUnpacker
 
         private int FindGameProcess()
         {
-            if (_gameBrowser != null && !_gameBrowser.HasExited && HasFlash(_gameBrowser)) return _gameBrowser.Id;
             var candidates = Process.GetProcessesByName("iexplore").Where(HasFlash).ToArray();
             if (candidates.Length == 1) return candidates[0].Id;
             if (candidates.Length > 1) throw new InvalidOperationException("检测到多个 Flash 游戏进程。请关闭其他 Flash 游戏后重试，或使用备用进程选择。 ");
@@ -284,6 +294,12 @@ namespace AndroidGameUnpacker
                         WriteJson(context, new { ok = string.IsNullOrEmpty(error), error = error }, string.IsNullOrEmpty(error) ? 200 : 400);
                         return;
                     }
+                    if (path == "/api/diagnose")
+                    {
+                        var request = ReadJson<StartRequest>(context);
+                        WriteJson(context, Diagnose(request == null ? "" : request.InputUrl));
+                        return;
+                    }
                     if (path == "/api/open-game")
                     {
                         StartRequest request = ReadJson<StartRequest>(context);
@@ -293,7 +309,8 @@ namespace AndroidGameUnpacker
                             WriteJson(context, new { ok = false, error = "请输入有效的游戏网页地址。" }, 400);
                             return;
                         }
-                        _gameBrowser = Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--flash-browser \"" + gameUrl.AbsoluteUri.Replace("\"", "%22") + "\"") { UseShellExecute = false });
+                        lock (_sync) { if (_diagnosedUrl != gameUrl.AbsoluteUri || _diagnosis != "memory") throw new InvalidOperationException("仅检测结果为需要采集时，才可打开采集流程。"); }
+                        OpenEdgeGame(gameUrl);
                         WriteJson(context, new { ok = true });
                         return;
                     }
@@ -339,6 +356,16 @@ namespace AndroidGameUnpacker
         private string StartJob(StartRequest request)
         {
             if (request == null) return "请求内容为空。";
+            if (!string.IsNullOrWhiteSpace(request.InputUrl))
+            {
+                Uri requested;
+                if (!Uri.TryCreate(request.InputUrl.Trim(), UriKind.Absolute, out requested)) return "游戏网址无效。";
+                lock (_sync)
+                {
+                    if (_diagnosedUrl != requested.AbsoluteUri) return "请先检测当前游戏网址。";
+                    if ((request.MemoryReady || request.MemoryProcessId > 0) ? _diagnosis != "memory" : _diagnosis != "direct") return "当前检测结果不允许执行此操作，请重新检测。";
+                }
+            }
             if (request.MemoryReady && request.MemoryProcessId == 0)
             {
                 try { request.MemoryProcessId = FindGameProcess(); }
