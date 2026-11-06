@@ -1,11 +1,19 @@
 ---
 name: android-game-unpack-pipeline
-description: Inspect, unpack, export, validate, or troubleshoot Android game resources from APKs, Unity AssetBundles, Unity game folders, Unreal PAKs, and unpacked Android directories using the local pipeline. Use when the user wants reusable PNG, WAV, model, or text assets, an engine/resource inventory, or improvements to this pipeline; do not use for modifying game binaries or bypassing access controls.
+description: Acquire, unpack, export, validate, or troubleshoot Android and public web-game resources, including APK, Unity bundles, Unreal PAK, and SWF through the local AssetScavenger pipeline. Use for usable image/audio/model exports and source/timeline evidence handoff for replication; not for bypassing access controls or claiming complete game restoration from extraction alone.
 ---
 
 # Android Game Unpack Pipeline
 
 Use the maintained local tool at `D:\手机解包游戏\AssetScavenger`.
+
+## Required completion contract
+
+Complete every applicable stage of the requested extraction: identify input and dependencies → inspect → acquire/unpack → selectively export/convert → validate usable outputs → report failures → hand off evidence. Do not silently skip stages, treat an exit code or raw file count as success, or make the user discover missing resource categories one at a time. Mark a stage not applicable only with an input-format or task-scope reason.
+
+For SWF intended for a full FE replica, read [references/replica-handoff.md](references/replica-handoff.md) before exporting and before declaring the extraction ready. Source scripts, timelines, matrices, masks and filters are part of the evidence handoff even when they must stay outside the FE Assets directory. Extraction completion and complete replica acceptance are separate gates.
+
+For a pipeline repair, preserve existing user options and verify the affected input/export route plus the failure path. Do not run unrelated huge exports or add tests that merely repeat an assignment.
 
 ## Choose the operation
 
@@ -40,5 +48,11 @@ Standard compression is not the same as encryption. Modified IL2CPP metadata can
 ## Verify the outcome
 
 Check the generated `00_report/report.json`, `00_report/validation.json`, and `07_unresolved/issues.txt`. For a targeted smoke test, confirm at least one expected converted asset has a valid signature and nonzero size. For large jobs, report counts and unresolved categories rather than opening every file.
+
+A single valid file is a route smoke test, not acceptance of a full export. For a full extraction, account for every discovered category requested by the user and its conversion outcome. Inspect representative images, animation parts, transparency/filters, and audio from each distinct conversion path; report skipped, failed, unsupported, encrypted or dependency-missing categories separately. Do not report all content usable when validation has not established that.
+
+For SWF handoff, verify the main game rather than a loader/ad; retain AS and XFL/FLA evidence; map repeated parts and dependencies; check Shape/MorphShape and audio as well as bitmap images. An image count such as 188 does not establish the full game inventory. Do not import source/reference/intermediate files or duplicate whole-frame atlases into FE by default.
+
+When the user requests both extraction and a complete replica, continue from the validated handoff into the agreed replica workflow. Do not stop at resource export or switch the deliverable to a playable SWF wrapper. The local replica instructions are at `D:\Skill合集\swf-to-fe-replica\SKILL.md`; discover and read the actual location when working on another machine.
 
 When extending or diagnosing the implementation, read [references/tooling.md](references/tooling.md).
