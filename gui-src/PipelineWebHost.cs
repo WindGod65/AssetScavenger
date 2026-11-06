@@ -31,6 +31,26 @@ namespace AndroidGameUnpacker
         [STAThread]
         private static void Main(string[] args)
         {
+            if (args != null && args.Length == 2 && args[0] == "--flash-browser")
+            {
+                Uri game;
+                if (!Uri.TryCreate(args[1], UriKind.Absolute, out game) || (game.Scheme != "http" && game.Scheme != "https")) return;
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                try
+                {
+                    using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION"))
+                        key.SetValue(Path.GetFileName(Application.ExecutablePath), 11001, Microsoft.Win32.RegistryValueKind.DWord);
+                    Form window = new Form { Text = "Flash 游戏窗口 · IE 内核 · 进入关卡后返回控制台点击开始采集", Width = 1100, Height = 820 };
+                    Label notice = new Label { Dock = DockStyle.Top, Height = 54, BackColor = Color.FromArgb(255, 226, 153), Text = "请先进入游戏并加载关卡，再返回资源清道夫点击【我已进入游戏，开始采集】。\n本窗口使用 IE 内核；如果 Flash 未能加载，请继续使用你已验证可玩的 Edge IE 模式。" };
+                    WebBrowser browser = new WebBrowser { Dock = DockStyle.Fill, ScriptErrorsSuppressed = true };
+                    window.Controls.Add(browser); window.Controls.Add(notice);
+                    browser.Navigate(game);
+                    Application.Run(window);
+                }
+                catch (Exception ex) { MessageBox.Show("IE 游戏窗口无法启动：" + ex.Message); }
+                return;
+            }
             bool noBrowser = args != null && args.Any(delegate(string value) { return string.Equals(value, "--no-browser", StringComparison.OrdinalIgnoreCase); });
             bool created;
             _singleInstance = new Mutex(true, "Local\\AndroidGameUnpackerPipeline", out created);
@@ -124,6 +144,22 @@ namespace AndroidGameUnpacker
         private readonly object _sync = new object();
         private readonly string _token;
         private PipelineState _state;
+        private Process _gameBrowser;
+
+        private static bool HasFlash(Process process)
+        {
+            try { return process.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.EndsWith(".ocx", StringComparison.OrdinalIgnoreCase) && m.ModuleName.IndexOf("flash", StringComparison.OrdinalIgnoreCase) >= 0); }
+            catch { return false; }
+        }
+
+        private int FindGameProcess()
+        {
+            if (_gameBrowser != null && !_gameBrowser.HasExited && HasFlash(_gameBrowser)) return _gameBrowser.Id;
+            var candidates = Process.GetProcessesByName("iexplore").Where(HasFlash).ToArray();
+            if (candidates.Length == 1) return candidates[0].Id;
+            if (candidates.Length > 1) throw new InvalidOperationException("检测到多个 Flash 游戏进程。请关闭其他 Flash 游戏后重试，或使用备用进程选择。 ");
+            throw new InvalidOperationException("尚未检测到已加载 Flash 的游戏进程。请进入实际关卡；也可使用你已验证可玩的 Edge IE 模式打开游戏，再点击采集。 ");
+        }
         private Process _process;
         private bool _disposed;
 
@@ -257,7 +293,7 @@ namespace AndroidGameUnpacker
                             WriteJson(context, new { ok = false, error = "请输入有效的游戏网页地址。" }, 400);
                             return;
                         }
-                        Process.Start(new ProcessStartInfo(gameUrl.AbsoluteUri) { UseShellExecute = true });
+                        _gameBrowser = Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--flash-browser \"" + gameUrl.AbsoluteUri.Replace("\"", "%22") + "\"") { UseShellExecute = false });
                         WriteJson(context, new { ok = true });
                         return;
                     }
@@ -303,6 +339,11 @@ namespace AndroidGameUnpacker
         private string StartJob(StartRequest request)
         {
             if (request == null) return "请求内容为空。";
+            if (request.MemoryReady && request.MemoryProcessId == 0)
+            {
+                try { request.MemoryProcessId = FindGameProcess(); }
+                catch (Exception ex) { return ex.Message; }
+            }
             if (request.MemoryProcessId > 0 && !request.MemoryReady) return "请先打开游戏并确认已进入关卡，再开始内存采集。";
             string inputUrl = (request.InputUrl ?? "").Trim();
             string inputPath = (request.InputPath ?? "").Trim();

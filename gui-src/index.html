@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>资源清道夫 / AssetScavenger</title>
   <style>
+    #memoryPid{display:none}
+    #captureReady::backdrop{background:#020916d9;backdrop-filter:blur(5px)}
+    #captureReady{border:2px solid var(--cyan);box-shadow:0 0 70px #43e0ce44;width:min(600px,94vw)}
+    #captureReady h2{font-size:25px;color:var(--cyan)}
+    #captureNotice{font-size:17px;line-height:1.8;background:#153d50;padding:16px;border-radius:12px}
+    #captureSwf{padding:12px;margin-top:12px;background:#174b60;color:#fff;border-color:var(--cyan)}
     .swfPage #webGuide,.swfPage .stats,.swfPage .warning{display:none!important}
     .swfPage:has(#autoUnpackSwf:checked) .warning{display:block!important}
     .swfPage:not(:has(#autoUnpackSwf:checked)) #convertFlashSvgOption{display:none!important}
@@ -40,7 +46,7 @@
         <h2>任务设置</h2><p class="pageHint" id="pageHint">请选择本地游戏文件或目录。</p>
         <div class="hiddenPage" id="webGuide"><div class="webGuide"><div class="webStep"><b>1 粘贴网址</b>不知道 SWF 在哪也没关系</div><div class="webStep"><b>2 自动解包</b>需要源码和素材时勾选</div><div class="webStep"><b>3 查看结果</b>每个 SWF 独立存放</div></div></div>
         <div class="hiddenPage" id="urlGroup"><label class="label">游戏网页地址</label><div class="path"><input id="inputUrl" type="url" placeholder="例如 https://www.4399.com/flash/..."></div>
-        <div class="toggle" style="display:block"><strong>SWF · 资源链路诊断</strong><p id="detectionResult" role="status">等待检测 · 验证直取链路与 SWF 文件签名</p><button class="iconbtn" id="detectSwf" type="button">检测获取方式</button><hr><strong>运行时内存采集</strong><p>在播放器中打开游戏并加载关卡，再填写任务管理器中该播放器的 PID。仅采集指定进程当前已加载的 SWF，后续关卡可再次采集。</p><input id="memoryPid" class="field" type="number" min="1" placeholder="播放器进程 PID"><button class="iconbtn" id="captureSwf" type="button">调用 FFDec 采集 SWF</button></div></div>
+        <div class="toggle" style="display:block"><strong>SWF · 资源链路诊断</strong><p id="detectionResult" role="status">等待检测 · 验证直取链路与 SWF 文件签名</p><button class="iconbtn" id="detectSwf" type="button">检测获取方式</button><hr><strong>运行时内存采集 · 自动识别游戏</strong><p>一键打开 IE 内核游戏窗口 → 进入关卡 → 确认采集。自动定位 Flash 进程，无需查找 PID；后续加载新关卡可再次采集。</p><input id="memoryPid" class="field" type="number" min="1"><button class="iconbtn" id="captureSwf" type="button">打开游戏并准备采集</button></div></div>
         <details id="localInput" open><summary>导入本地文件（可选）</summary><label class="label" id="inputLabel">输入 APK、资源包或游戏目录</label>
         <div class="path"><input id="inputPath" placeholder="请选择本地文件或目录"><button class="iconbtn" id="pickFile" title="选择文件">文件</button><button class="iconbtn" id="pickFolder" title="选择目录">目录</button></div>
         </details><label class="label">导出位置</label>
@@ -64,7 +70,7 @@
   </div>
   <div class="modal hidden" id="welcome"><div class="welcome"><div class="eyebrow">ASSETSCAVENGER</div><h2>选择本地游戏文件</h2><div class="choice"><button id="welcomeFile"><strong>选择文件</strong></button><button id="welcomeFolder"><strong>选择目录</strong></button></div><button class="skip" id="skip">返回</button></div></div>
   <div class="toast" id="toast"></div>
-  <dialog id="captureReady" class="card" style="color:var(--text);max-width:540px;padding:26px"><h2>等待游戏运行 · 采集准备</h2><p id="captureNotice">游戏链接已打开。请进入实际游戏关卡，等待画面、角色和素材加载完成，再确认采集。</p><p>如果浏览器提示不支持 Flash，请在支持 Flash 的播放器中打开同一游戏。打开网页本身不会让游戏内容进入内存。</p><label class="label">实际运行游戏的播放器进程 PID</label><input id="readyPid" class="field" type="number" min="1" placeholder="任务管理器 → 详细信息 → PID"><button id="confirmCapture" class="primary" type="button">我已进入游戏，确定开始采集</button><button id="cancelCapture" class="iconbtn" type="button">稍后采集</button></dialog>
+  <dialog id="captureReady" class="card" style="color:var(--text);padding:26px"><h2>下一步：进入游戏，再开始采集</h2><p id="captureNotice">① 已打开 IE 内核游戏窗口<br>② 进入实际关卡，等待角色和场景加载<br>③ 返回这里，点击下方按钮开始采集</p><p>系统自动定位已加载 Flash 的游戏进程，无需输入 PID。若专用窗口无法运行游戏，可在你现有的 Edge IE 模式中打开游戏，系统也会检测它。</p><p id="captureError" role="alert" style="color:#ffb6b6;font-weight:bold"></p><details><summary>高级备用：手动指定进程</summary><input id="readyPid" class="field" type="number" min="1" placeholder="通常留空，自动识别游戏进程"></details><button id="confirmCapture" class="primary" type="button">我已进入游戏，开始采集</button><button id="cancelCapture" class="iconbtn" type="button">稍后采集</button></dialog>
   <script>
     const TOKEN='{{PIPELINE_TOKEN}}'; const $=id=>document.getElementById(id); let clearedAt=0,lastStatus='',currentType='';
     const TYPES={
@@ -78,8 +84,8 @@
     function routeFromHash(){const type=location.hash.replace('#','');type&&TYPES[type]?openType(type,false):showHome()}
     async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Pipeline-Token':TOKEN},body:JSON.stringify(body||{})});const j=await r.json();if(!r.ok||j.ok===false)throw new Error(j.error||'请求失败');return j}
     let preparedGameUrl='',diagnosticBusy=false;const promptedJobs=new Set();
-    async function swfTask(capture){try{const pid=Number($('memoryPid').value);if(capture&&(!Number.isInteger(pid)||pid<1))throw new Error('请填写播放器进程 PID');const url=capture?preparedGameUrl:$('inputUrl').value;if(!url)throw new Error('请先填写游戏网址');await api('/api/start',{InputUrl:url,MemoryProcessId:capture?pid:0,MemoryReady:capture,OutputPath:$('outputPath').value,Engine:'web',Profile:capture?'standard':'scan',AssetKinds:['images','audio','text'],AutoUnpackSwf:capture&&$('autoUnpackSwf').checked,ConfirmLargeExport:$('confirmLarge').checked});$('detectionResult').textContent=capture?'采集已启动 · 正在扫描指定进程':'检测中 · 正在验证真实游戏入口';clearedAt=0;return true}catch(e){toast(e.message);return false}}
-    async function prepareCapture(url){if($('captureReady').open)return;try{await api('/api/open-game',{InputUrl:url});preparedGameUrl=url;$('readyPid').value=$('memoryPid').value;$('captureReady').showModal()}catch(e){toast('打开游戏失败：'+e.message)}}
+    async function swfTask(capture){try{const pid=Number($('memoryPid').value);if(capture&&(!Number.isInteger(pid)||pid<0))throw new Error('备用进程编号无效');const url=capture?preparedGameUrl:$('inputUrl').value;if(!url)throw new Error('请先填写游戏网址');await api('/api/start',{InputUrl:url,MemoryProcessId:capture?pid:0,MemoryReady:capture,OutputPath:$('outputPath').value,Engine:'web',Profile:capture?'standard':'scan',AssetKinds:['images','audio','text'],AutoUnpackSwf:capture&&$('autoUnpackSwf').checked,ConfirmLargeExport:$('confirmLarge').checked});$('captureError').textContent='';$('detectionResult').textContent=capture?'采集已启动 · 正在扫描自动识别的游戏进程':'检测中 · 正在验证真实游戏入口';clearedAt=0;return true}catch(e){$('captureError').textContent=e.message;toast(e.message);return false}}
+    async function prepareCapture(url){if($('captureReady').open)return;try{await api('/api/open-game',{InputUrl:url});preparedGameUrl=url;$('readyPid').value='';$('captureError').textContent='';$('captureReady').showModal()}catch(e){$('detectionResult').textContent='打开游戏失败：'+e.message;toast('打开游戏失败：'+e.message)}}
     $('detectSwf').onclick=()=>swfTask(false);$('captureSwf').textContent='打开游戏并准备采集';$('captureSwf').onclick=()=>prepareCapture($('inputUrl').value);
     $('cancelCapture').onclick=()=>$('captureReady').close();$('confirmCapture').onclick=async()=>{$('memoryPid').value=$('readyPid').value;$('confirmCapture').disabled=true;try{if(await swfTask(true))$('captureReady').close()}finally{$('confirmCapture').disabled=false}};
     setInterval(async()=>{if(currentType!=='web'||diagnosticBusy)return;diagnosticBusy=true;try{const s=await(await fetch('/api/status',{cache:'no-store'})).json();const log=(s.logs||[]).join('\n');const matches=[...log.matchAll(/\[DETECT:(DIRECT|MEMORY)\]([^\n]*)/g)];if(matches.length){const m=matches[matches.length-1];$('detectionResult').textContent=(m[1]==='DIRECT'?'SWF 格式已验证 · ':'需加载实际游戏 · ')+m[2];if(m[1]==='MEMORY'&&s.status==='completed'&&!promptedJobs.has(s.jobRoot)){promptedJobs.add(s.jobRoot);await prepareCapture(s.inputPath||$('inputUrl').value)}}}catch(e){}finally{diagnosticBusy=false}},900);
