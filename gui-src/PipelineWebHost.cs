@@ -248,6 +248,19 @@ namespace AndroidGameUnpacker
                         WriteJson(context, new { ok = string.IsNullOrEmpty(error), error = error }, string.IsNullOrEmpty(error) ? 200 : 400);
                         return;
                     }
+                    if (path == "/api/open-game")
+                    {
+                        StartRequest request = ReadJson<StartRequest>(context);
+                        Uri gameUrl;
+                        if (request == null || !Uri.TryCreate(request.InputUrl, UriKind.Absolute, out gameUrl) || (gameUrl.Scheme != "http" && gameUrl.Scheme != "https"))
+                        {
+                            WriteJson(context, new { ok = false, error = "请输入有效的游戏网页地址。" }, 400);
+                            return;
+                        }
+                        Process.Start(new ProcessStartInfo(gameUrl.AbsoluteUri) { UseShellExecute = true });
+                        WriteJson(context, new { ok = true });
+                        return;
+                    }
                     if (path == "/api/stop")
                     {
                         StopJob();
@@ -290,6 +303,7 @@ namespace AndroidGameUnpacker
         private string StartJob(StartRequest request)
         {
             if (request == null) return "请求内容为空。";
+            if (request.MemoryProcessId > 0 && !request.MemoryReady) return "请先打开游戏并确认已进入关卡，再开始内存采集。";
             string inputUrl = (request.InputUrl ?? "").Trim();
             string inputPath = (request.InputPath ?? "").Trim();
             bool urlMode = inputUrl.Length > 0;
@@ -315,7 +329,7 @@ namespace AndroidGameUnpacker
                 return new[] { "obj", "fbx", "gltf" }.Contains((value ?? "").ToLowerInvariant());
             }).Select(delegate(string value) { return value.ToLowerInvariant(); }).Distinct().ToList();
             if (ordinaryExport && kinds.Contains("models") && modelFormats.Count == 0) return "导出模型时至少选择 OBJ、FBX 或 GLTF 中的一种格式。";
-            if (profile != "scan" && !request.ConfirmLargeExport) return "请先确认导出可能占用大量磁盘空间。";
+            if (profile != "scan" && (engine != "web" || request.AutoUnpackSwf) && !request.ConfirmLargeExport) return "请先确认导出可能占用大量磁盘空间。";
 
             string outputRoot = string.IsNullOrWhiteSpace(request.OutputPath) ? Path.Combine(_baseDirectory, "jobs") : request.OutputPath.Trim();
             try { outputRoot = Path.GetFullPath(outputRoot); }
@@ -350,23 +364,25 @@ namespace AndroidGameUnpacker
                 _state.PlannedPhases = profile == "unityproject" ? 2 : 1 + (profile == "full" ? 1 : 0) + (profile == "scan" ? 0 : kinds.Count) + (ordinaryExport && kinds.Contains("models") && modelFormats.Any(delegate(string value) { return value != "obj"; }) ? 1 : 0);
             }
 
-            Thread worker = new Thread(new ThreadStart(delegate { RunJob(script, inputPath, inputUrl, request.BuildPlayableWeb, request.AutoUnpackSwf, request.ConvertFlashSvgToPng, outputRoot, engine, profile, kinds, modelFormats, request.UnityVersion, request.MaxExportTasks); }));
+            if (request.MemoryProcessId < 0 || (request.MemoryProcessId > 0 && (!urlMode || engine != "web"))) return "内存采集需要网页地址和有效的播放器进程 PID。";
+            Thread worker = new Thread(new ThreadStart(delegate { RunJob(script, inputPath, inputUrl, request.BuildPlayableWeb, request.AutoUnpackSwf, request.ConvertFlashSvgToPng, outputRoot, engine, profile, kinds, modelFormats, request.UnityVersion, request.MaxExportTasks, request.MemoryProcessId); }));
             worker.IsBackground = true;
             worker.Name = "UnpackPipelineWorker";
             worker.Start();
             return null;
         }
 
-        private void RunJob(string script, string inputPath, string inputUrl, bool buildPlayableWeb, bool autoUnpackSwf, bool convertFlashSvgToPng, string outputRoot, string engine, string profile, List<string> kinds, List<string> modelFormats, string unityVersion, int maxTasks)
+        private void RunJob(string script, string inputPath, string inputUrl, bool buildPlayableWeb, bool autoUnpackSwf, bool convertFlashSvgToPng, string outputRoot, string engine, string profile, List<string> kinds, List<string> modelFormats, string unityVersion, int maxTasks, int memoryProcessId)
         {
             try
             {
                 StringBuilder command = new StringBuilder();
                 command.Append("[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = [Console]::OutputEncoding; $ProgressPreference = 'SilentlyContinue'; ");
-                command.Append("& ").Append(PsLiteral(script));
+                command.Append("try { & ").Append(PsLiteral(script));
                 if (!string.IsNullOrWhiteSpace(inputUrl)) command.Append(" -InputUrl ").Append(PsLiteral(inputUrl));
                 else command.Append(" -InputPath ").Append(PsLiteral(inputPath));
                 if (buildPlayableWeb) command.Append(" -BuildPlayableWeb");
+                if (memoryProcessId > 0) command.Append(" -MemoryProcessId ").Append(memoryProcessId);
                 if (autoUnpackSwf) command.Append(" -AutoUnpackSwf");
                 if (convertFlashSvgToPng) command.Append(" -ConvertFlashSvgToPng");
                 command.Append(" -OutputRoot ").Append(PsLiteral(outputRoot));
@@ -387,6 +403,7 @@ namespace AndroidGameUnpacker
                 if (!string.IsNullOrWhiteSpace(unityVersion)) command.Append(" -UnityVersion ").Append(PsLiteral(unityVersion.Trim()));
                 if (maxTasks > 0 && maxTasks <= 128) command.Append(" -MaxExportTasks ").Append(maxTasks);
 
+                command.Append(" } catch { Write-Output ('[ERROR] ' + $_.Exception.Message); exit 1 }");
                 string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command.ToString()));
                 ProcessStartInfo start = new ProcessStartInfo();
                 start.FileName = "powershell.exe";
@@ -397,7 +414,7 @@ namespace AndroidGameUnpacker
                 start.RedirectStandardOutput = true;
                 start.RedirectStandardError = true;
                 start.StandardOutputEncoding = Encoding.UTF8;
-                start.StandardErrorEncoding = Encoding.Default;
+                start.StandardErrorEncoding = Encoding.UTF8;
 
                 Process process = new Process();
                 process.StartInfo = start;
@@ -843,6 +860,8 @@ namespace AndroidGameUnpacker
 
     internal sealed class StartRequest
     {
+        public int MemoryProcessId { get; set; }
+        public bool MemoryReady { get; set; }
         public string InputPath { get; set; }
         public string InputUrl { get; set; }
         public string OutputPath { get; set; }

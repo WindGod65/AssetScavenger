@@ -4,6 +4,7 @@ param(
     [string]$InputPath = '',
 
     [string]$InputUrl = '',
+    [int]$MemoryProcessId = 0,
     [switch]$BuildPlayableWeb,
     [Alias('ExportFlashProject')]
     [switch]$AutoUnpackSwf,
@@ -558,7 +559,7 @@ function Invoke-PythonWebDownload {
 function Invoke-WebGameDownload {
     param([Uri]$Uri, [string]$Destination)
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    $is4399GamePage = $Uri.Host -match '(?i)(^|\.)4399\.com$' -and $Uri.AbsolutePath -match '^/flash/\d+(?:_\d+)?\.htm$'
+    $is4399GamePage = $Uri.Host -match '(?i)(^|\.)4399\.com$' -and $Uri.AbsolutePath -match '^/flash/[^/]+\.htm$'
     if ($is4399GamePage) {
         $bundledPython = Join-Path $script:PipelineRoot 'tools\Python\python.exe'
         $pythonPath = if (Test-Path -LiteralPath $bundledPython -PathType Leaf) { $bundledPython }
@@ -569,10 +570,17 @@ function Invoke-WebGameDownload {
         }
         Write-ProgressStep -Percent 18 -Message '正在定位 4399 真实游戏入口......' -Location 'Invoke-WebGameDownload'
         Write-Step '已启用 4399 SWF 直取：只下载当前游戏的 SWF 依赖，不抓取门户、广告或推荐内容。'
-        & $pythonPath -X utf8 $helper '--url' $Uri.AbsoluteUri '--output' $Destination
+        $probeArgs = @()
+        if ($Profile -eq 'scan') { $probeArgs = @('--probe') }
+        & $pythonPath -X utf8 $helper '--url' $Uri.AbsoluteUri '--output' $Destination @probeArgs
         if ($LASTEXITCODE -ne 0) { throw "4399 SWF 获取失败，退出码 $LASTEXITCODE" }
+        if ($Profile -eq 'scan') { return $Destination }
         $manifestPath = Join-Path $Destination 'manifest.json'
         $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
+        if ($manifest.PSObject.Properties['requires_memory'] -and $manifest.requires_memory) {
+            $script:NeedsMemoryCapture = $true
+            return $Destination
+        }
         $script:DownloadedWebResources = @($manifest.swf_files).Count
         Remove-Item -LiteralPath $manifestPath -Force
         Write-ProgressStep -Percent 68 -Message "SWF 获取完成：$($script:DownloadedWebResources) 个文件" -Location 'Invoke-WebGameDownload'
@@ -672,12 +680,28 @@ function New-WebPlayableLauncher {
     }
 }
 
+function Update-FFDecForTask {
+    if ($script:FFDecChecked) { return }
+    $script:FFDecChecked = $true
+    Write-Step '正在检查 FFDec 官方最新版本；离线时使用内置版本'
+    $python = Join-Path $script:PipelineRoot 'tools\Python\python.exe'
+    if (Test-Path -LiteralPath $python) {
+        $result = @(& $python -X utf8 (Join-Path $script:PipelineRoot 'tools\WebSWF\check_ffdec.py'))
+        if ($result.Count -gt 0) {
+            $result | Select-Object -SkipLast 1 | ForEach-Object { Write-Step $_ }
+            $candidate = [string]$result[-1]
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $script:FFDec = $candidate }
+        }
+    }
+}
+
 function Export-FlashSwfPackages {
     param(
         [Parameter(Mandatory = $true)][System.IO.FileInfo[]]$SwfFiles,
         [Parameter(Mandatory = $true)][string]$OutputRoot
     )
 
+    Update-FFDecForTask
     if (-not (Test-Path -LiteralPath $script:FFDec -PathType Leaf)) {
         throw "检测到 SWF，但找不到内置 FFDec：$($script:FFDec)"
     }
@@ -930,11 +954,49 @@ while (Test-Path -LiteralPath $script:JobRoot) {
     $suffix++
 }
 
-$isDirect4399 = $urlMode -and $parsedInputUrl.Host -match '(?i)(^|\.)4399\.com$' -and $parsedInputUrl.AbsolutePath -match '^/flash/\d+(?:_\d+)?\.htm$'
+$isDirect4399 = $urlMode -and $parsedInputUrl.Host -match '(?i)(^|\.)4399\.com$' -and $parsedInputUrl.AbsolutePath -match '^/flash/[^/]+\.htm$'
 if ($isDirect4399) {
     New-Item -ItemType Directory -Path $script:JobRoot -Force | Out-Null
     Write-ProgressStep -Percent 2 -Message "已创建 SWF 导出文件夹：$($script:JobRoot)"
-    $script:SourcePath = Invoke-WebGameDownload -Uri $parsedInputUrl -Destination $script:JobRoot
+    if ($MemoryProcessId -gt 0) {
+        Update-FFDecForTask
+        [void](Get-Process -Id $MemoryProcessId -ErrorAction Stop)
+        $captureRoot = Join-Path $script:JobRoot 'memory_capture'
+        New-Item -ItemType Directory -Path $captureRoot -Force | Out-Null
+        Write-ProgressStep -Percent 20 -Message "内存采集 / FFDec 正在搜索进程 $MemoryProcessId 中已加载的 SWF"
+        Push-Location $captureRoot
+        try { & $script:FFDec -cli -memorySearch $MemoryProcessId }
+        finally { Pop-Location }
+        $captured = @(Get-ChildItem -LiteralPath $captureRoot -Filter '*.swf' -File)
+        if ($captured.Count -eq 0) { throw '未采集到 SWF。请确认 PID 正确、游戏已加载，且播放器与本工具权限一致。' }
+        $hashes = @{}
+        $inventory = @()
+        foreach ($file in $captured) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            if (-not $hashes.ContainsKey($hash)) {
+                $name = 'memory_{0}.swf' -f $hash.Substring(0,16)
+                Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $script:JobRoot $name)
+                $hashes[$hash] = $name
+            }
+            $inventory += [ordered]@{ capturedFile = $file.Name; file = $hashes[$hash]; sha256 = $hash; bytes = $file.Length; processId = $MemoryProcessId }
+        }
+        $inventory | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $script:JobRoot 'memory_manifest.json') -Encoding UTF8
+        $script:DownloadedWebResources = $hashes.Count
+        Write-ProgressStep -Percent 68 -Message "内存采集完成：发现 $($captured.Count) 个，去重后 $($hashes.Count) 个 SWF；原始采集保存在 memory_capture"
+    }
+    else {
+        $script:SourcePath = Invoke-WebGameDownload -Uri $parsedInputUrl -Destination $script:JobRoot
+        if ($script:NeedsMemoryCapture) {
+            Write-ProgressStep -Percent 100 -Message '检测完成：需要进入游戏后确认内存采集，尚未导出游戏内容'
+            Write-Output $script:JobRoot
+            return
+        }
+        if ($Profile -eq 'scan') {
+            Write-ProgressStep -Percent 100 -Message '检测完成，请查看链路诊断结果'
+            Write-Output $script:JobRoot
+            return
+        }
+    }
     if ($AutoUnpackSwf) {
         $script:Logs = Join-Path $script:JobRoot 'logs'
         New-Item -ItemType Directory -Path $script:Logs -Force | Out-Null

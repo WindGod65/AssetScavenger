@@ -4,6 +4,8 @@ import json
 import os
 import re
 import sys
+import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
@@ -18,12 +20,29 @@ def fetch(url, referer=""):
     if referer:
         headers["Referer"] = referer
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return response.geturl(), response.headers, response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.geturl(), response.headers, response.read()
+    except urllib.error.URLError as error:
+        parsed = urllib.parse.urlparse(url)
+        # Older public 4399 asset hosts may not support HTTPS. Retry the same
+        # public resource over HTTP without disabling certificate validation.
+        if (parsed.scheme == "https" and parsed.hostname
+                and parsed.hostname.endswith(".4399.com")
+                and parsed.path.startswith("/4399swf/")
+                and isinstance(error.reason, (ssl.SSLError, ConnectionError, TimeoutError))):
+            fallback = urllib.parse.urlunparse(parsed._replace(scheme="http"))
+            print(f"[RETRY HTTP] {fallback}", flush=True)
+            try:
+                return fetch(fallback, referer)
+            except Exception as fallback_error:
+                raise RuntimeError(f"HTTPS 连接失败：{error}；HTTP 回退失败：{fallback_error}") from fallback_error
+        raise
 
 
 def decode_html(headers, data):
-    charset = headers.get_content_charset() or "utf-8"
+    meta = re.search(rb'(?i)charset\s*=\s*["\']?([\w-]+)', data[:4096])
+    charset = headers.get_content_charset() or (meta.group(1).decode("ascii") if meta else "utf-8")
     try:
         return data.decode(charset, errors="replace")
     except LookupError:
@@ -51,6 +70,20 @@ def html_references(content):
     for pattern in patterns:
         found.extend(re.findall(pattern, content))
     return list(dict.fromkeys(found))
+
+
+def game_references(url, content):
+    # Series portals contain multiple games and a menu SWF. Select only the
+    # entry the page would launch for the requested query parameter.
+    entries = dict(re.findall(
+        r'''game_url_arr\s*\[\s*(\d+)\s*\]\s*=\s*["']([^"']+)["']''', content))
+    if entries:
+        selection = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("g", [""])[0]
+        if selection not in entries:
+            raise ValueError("系列专题页需要有效的 g 参数；可选值：" + ", ".join(entries))
+        return [entries[selection]]
+    paths = re.findall(r'''(?is)_strGamePath\s*=\s*["']([^"']+)["']''', content)
+    return paths or html_references(content)
 
 
 def swf_references(data):
@@ -82,9 +115,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname or not parsed.hostname.endswith("4399.com"):
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or not (parsed.hostname == "4399.com" or parsed.hostname.endswith(".4399.com")):
         raise ValueError("需要输入公开的 4399 游戏页面地址")
 
     swf_dir = os.path.abspath(args.output)
@@ -102,7 +136,12 @@ def main():
         try:
             final_url, headers, data = fetch(normalized, referer)
             path = urllib.parse.urlparse(final_url).path.lower()
+            if path.endswith(".swf") and data[:3] not in SWF_SIGNATURES:
+                raise RuntimeError("资源服务器未返回有效 SWF（可能返回错误页或访问提示）")
             if data[:3] in SWF_SIGNATURES:
+                if args.probe:
+                    print("[DETECT:DIRECT] 已验证 SWF 文件签名；不保证包含完整游戏。若只有菜单或加载画面，请使用内存采集。", flush=True)
+                    return
                 filename = safe_name(final_url, used_names)
                 target = os.path.join(swf_dir, filename)
                 with open(target, "wb") as output_file:
@@ -119,7 +158,13 @@ def main():
                 content = decode_html(headers, data)
                 html_pages.append(final_url)
                 print(f"[PAGE] {final_url}", flush=True)
-                for reference in html_references(content):
+                if re.search(r'game_url_arr\s*\[', content):
+                    print("[DETECT:MEMORY] 检测到多阶段游戏加载入口；直取可能仅包含菜单或加载器。请打开游戏、进入关卡后确认开始内存采集。", flush=True)
+                    with open(os.path.join(swf_dir, "manifest.json"), "w", encoding="utf-8") as output:
+                        json.dump({"source_url": args.url, "requires_memory": True,
+                                   "swf_files": [], "html_pages": html_pages, "failures": failures}, output, ensure_ascii=False, indent=2)
+                    return
+                for reference in game_references(final_url, content):
                     child = resolve_reference(final_url, reference)
                     child_path = urllib.parse.urlparse(child).path.lower()
                     if child_path.endswith((".swf", ".htm", ".html")) and child.split("#", 1)[0] not in seen:
@@ -134,8 +179,12 @@ def main():
     with open(os.path.join(swf_dir, "manifest.json"), "w", encoding="utf-8", newline="\n") as output:
         json.dump(manifest, output, ensure_ascii=False, indent=2)
         output.write("\n")
+    if args.probe:
+        print("[DETECT:MEMORY] 直取链路未验证；建议加载游戏后执行内存采集（不代表资源不存在）", flush=True)
+        return
     if not swf_files:
-        raise RuntimeError("没有找到 SWF；页面可能不是 Flash 游戏，或真实入口需要登录/动态脚本")
+        reason = failures[0]["reason"] if failures else "页面没有可识别的 Flash 入口"
+        raise RuntimeError("未获取到 SWF：" + reason + "。详细地址见导出目录 manifest.json")
     print(f"[DONE] 共获取 {len(swf_files)} 个 SWF，保存到：{swf_dir}", flush=True)
 
 

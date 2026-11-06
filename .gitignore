@@ -1,4 +1,5 @@
 jobs/
+tools/FFDec/releases/
 *.log
 **/__pycache__/
 *.pyc
