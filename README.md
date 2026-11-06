@@ -32,7 +32,7 @@
 
 ## 快速使用
 
-当前 Edge 采集入口使用 Selenium 官方 IEDriver（见 `tools/IEDriver/README.txt`）自动建立 Edge IE 模式会话并进入目标游戏地址，无需复制网址或手动切换模式。进入关卡、等待加载后确认采集。程序仅在初始空白文档验证 IE 引擎，不向运行中的 Flash 页面注入检查脚本；不会修改注册表或关闭 Windows 保护模式。浏览器启动失败时保留错误提示，不会改用普通模式冒充成功。
+当前 Edge 采集入口直接使用 Selenium 官方 BrowserFactory 源码中的 IE 模式启动参数，打开独立 Edge 配置的目标游戏窗口；不再运行 IEDriver，不创建 WebDriver 会话，不需要启动握手、复制网址或手动切换模式。程序根据本次启动的 Edge 根进程及其原生进程树绑定 IE 游戏内容进程，不再从全系统新出现的进程猜测目标。进入关卡后可直接确认采集；Flash 模块识别作为辅助。不注入页面脚本，不修改注册表或关闭 Windows 保护模式。启动请求完成不表示全部游戏资源已加载，确认采集前仍应检查实际游戏画面。参考源码：https://github.com/SeleniumHQ/selenium/blob/selenium-4.14.0/cpp/iedriver/BrowserFactory.cpp
 
 网页 SWF 获取支持“检测获取方式”：验证真实入口及 SWF 签名；直取失败会建议内存采集，不表示资源不存在。内存采集前请先在播放器中加载游戏，并填写任务管理器中的播放器 PID。程序调用 FFDec `-memorySearch`，只扫描指定进程当前已加载的 SWF；按 SHA-256 去重，原始采集在 `memory_capture`，去重文件在任务根目录，来源记录在 `memory_manifest.json`。加载新关卡后可再次采集；内存文件不能可靠恢复原始网址和文件名，也不保证包含尚未加载的内容。采集为空时检查进程选择与权限。
 

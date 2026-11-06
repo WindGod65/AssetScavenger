@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -125,41 +126,10 @@ namespace AndroidGameUnpacker
         private readonly string _token;
         private PipelineState _state;
         private string _diagnosedUrl = "", _diagnosis = "unknown";
-        private Process _ieDriver;
-        private string _ieSession;
-        private int _iePort;
-        private bool _ieVerified;
+        private int _edgeGameRoot;
+        private readonly string _edgeProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AssetScavenger", "EdgeIE", Guid.NewGuid().ToString("N"));
         private readonly object _ieSync = new object();
         private readonly HashSet<int> _ieGameProcesses = new HashSet<int>();
-
-        private object IeCommand(string method, string path, object payload)
-        {
-            var request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + _iePort + path);
-            request.Proxy = null;
-            request.KeepAlive = false;
-            request.ServicePoint.Expect100Continue = false;
-            request.Method = method;
-            request.Timeout = 45000;
-            request.ReadWriteTimeout = 45000;
-            if (payload != null)
-            {
-                byte[] bytes = Encoding.UTF8.GetBytes(_json.Serialize(payload));
-                request.ContentType = "application/json; charset=utf-8";
-                request.ContentLength = bytes.Length;
-                using (var stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
-            }
-            WebResponse response;
-            try { response = request.GetResponse(); }
-            catch (WebException error)
-            {
-                if (error.Response == null) throw new InvalidOperationException("IE 自动化通信中断（" + method + " " + path + "）：" + error.Message, error);
-                using (var reader = new StreamReader(error.Response.GetResponseStream(), Encoding.UTF8))
-                    throw new InvalidOperationException("Edge IE 模式启动失败：" + reader.ReadToEnd());
-            }
-            using (response)
-            using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
-                return _json.DeserializeObject(reader.ReadToEnd());
-        }
 
         private object Diagnose(string input)
         {
@@ -185,69 +155,156 @@ namespace AndroidGameUnpacker
             string edge = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft/Edge/Application/msedge.exe");
             if (!File.Exists(edge)) edge = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft/Edge/Application/msedge.exe");
             if (!File.Exists(edge)) throw new InvalidOperationException("未找到 Microsoft Edge。");
-            lock (_ieSync)
+            if (!Monitor.TryEnter(_ieSync)) throw new InvalidOperationException("游戏窗口正在打开，请稍候。");
+            try
             {
-                if (_ieDriver == null || _ieDriver.HasExited)
-                {
-                    string driver = Path.Combine(_baseDirectory, "tools/IEDriver/x64/IEDriverServer.exe");
-                    if (!File.Exists(driver)) throw new InvalidOperationException("缺少内置 IE 自动化组件 tools/IEDriver/IEDriverServer.exe。");
-                    var listener = new TcpListener(IPAddress.Loopback, 0);
-                    listener.Start(); _iePort = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
-                    _ieDriver = Process.Start(new ProcessStartInfo(driver, "/host=127.0.0.1 /port=" + _iePort + " /silent /log-level=FATAL") { UseShellExecute = false, CreateNoWindow = true });
-                    _ieSession = null;
-                    _ieVerified = false;
-                    bool ready = false;
-                    for (int i = 0; i < 50; i++)
-                    {
-                        if (_ieDriver.HasExited) break;
-                        try { IeCommand("GET", "/status", null); ready = true; break; } catch { Thread.Sleep(100); }
-                    }
-                    if (!ready) throw new InvalidOperationException("IE 自动化组件未能启动，请重新尝试。");
-                }
-                if (_ieSession == null)
-                {
-                    var previousProcesses = new HashSet<int>(Process.GetProcessesByName("iexplore").Select(p => p.Id));
-                    // Skip the driver's legacy IE-zone preflight without
-                    // changing or disabling Windows Protected Mode itself.
-                    var options = new Dictionary<string, object> { { "ie.edgechromium", true }, { "ie.edgepath", edge }, { "ignoreProtectedModeSettings", true } };
-                    var caps = new Dictionary<string, object> { { "browserName", "internet explorer" }, { "pageLoadStrategy", "none" }, { "se:ieOptions", options } };
-                    var result = (Dictionary<string, object>)IeCommand("POST", "/session", new { capabilities = new { alwaysMatch = caps } });
-                    var value = (Dictionary<string, object>)result["value"];
-                    _ieSession = Convert.ToString(value["sessionId"]);
-                    _ieGameProcesses.Clear();
-                    foreach (var process in Process.GetProcessesByName("iexplore"))
-                        if (!previousProcesses.Contains(process.Id)) _ieGameProcesses.Add(process.Id);
-                }
-                try
-                {
-                    // Verify the IE engine on the initial document. Injecting
-                    // script into a running Flash page can crash legacy IEDriver.
-                    if (!_ieVerified)
-                    {
-                        var result = (Dictionary<string, object>)IeCommand("POST", "/session/" + _ieSession + "/execute/sync", new { script = "return document.documentMode || 0;", args = new object[0] });
-                        if (Convert.ToInt32(result["value"]) <= 0) throw new InvalidOperationException("未能建立 IE 模式会话，未启动采集。");
-                        _ieVerified = true;
-                    }
-                    IeCommand("POST", "/session/" + _ieSession + "/url", new { url = gameUrl.AbsoluteUri });
-                }
-                catch { _ieSession = null; _ieVerified = false; throw; }
+                Directory.CreateDirectory(_edgeProfile);
+                bool reuse = false;
+                try { reuse = _edgeGameRoot > 0 && !Process.GetProcessById(_edgeGameRoot).HasExited; } catch { }
+                // Same IE-mode launch flags as Selenium BrowserFactory, without
+                // WebDriver hooks, remote sessions, or a localhost startup page.
+                string args = "--ie-mode-force --internet-explorer-integration=iemode --no-first-run --no-service-autorun --disable-sync --new-window --user-data-dir=\"" + _edgeProfile + "\" \"" + gameUrl.AbsoluteUri.Replace("\"", "%22") + "\"";
+                var process = Process.Start(new ProcessStartInfo(edge, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true });
+                if (process == null) throw new InvalidOperationException("Edge 未能启动。");
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                if (!reuse) _edgeGameRoot = process.Id;
+                RefreshGameProcesses();
             }
+            finally { Monitor.Exit(_ieSync); }
         }
 
         private static bool HasFlash(Process process)
         {
-            try { return process.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.EndsWith(".ocx", StringComparison.OrdinalIgnoreCase) && m.ModuleName.IndexOf("flash", StringComparison.OrdinalIgnoreCase) >= 0); }
-            catch { return false; }
+            // .NET Framework x64 Process.Modules omits WOW64 content modules.
+            // Include TH32CS_SNAPMODULE32 so 32-bit Flash ActiveX is visible.
+            IntPtr snapshot = CreateToolhelp32Snapshot(0x00000008 | 0x00000010, (uint)process.Id);
+            if (snapshot == new IntPtr(-1)) return false;
+            try
+            {
+                var entry = new ModuleEntry();
+                entry.Size = (uint)Marshal.SizeOf(typeof(ModuleEntry));
+                if (!Module32First(snapshot, ref entry)) return false;
+                do
+                {
+                    if (Regex.IsMatch(entry.Name ?? "", @"^(flash.*\.ocx|npswf.*\.dll|pepflashplayer\.dll)$", RegexOptions.IgnoreCase)) return true;
+                    entry.Size = (uint)Marshal.SizeOf(typeof(ModuleEntry));
+                } while (Module32Next(snapshot, ref entry));
+                return false;
+            }
+            finally { CloseHandle(snapshot); }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ModuleEntry
+        {
+            public uint Size, ModuleId, ProcessId, GlobalUsage, ProcessUsage;
+            public IntPtr BaseAddress;
+            public uint BaseSize;
+            public IntPtr Module;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string Name;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Path;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+        [DllImport("kernel32.dll", EntryPoint = "Module32FirstW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Module32First(IntPtr snapshot, ref ModuleEntry entry);
+        [DllImport("kernel32.dll", EntryPoint = "Module32NextW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Module32Next(IntPtr snapshot, ref ModuleEntry entry);
+        [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsWow64Process(IntPtr process, out bool wow64);
+
+        private void RefreshGameProcesses()
+        {
+            if (_edgeGameRoot <= 0) return;
+            var entries = new List<ProcessEntry>();
+            IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
+            if (snapshot == new IntPtr(-1)) return;
+            try
+            {
+                var entry = new ProcessEntry(); entry.Size = (uint)Marshal.SizeOf(typeof(ProcessEntry));
+                if (Process32First(snapshot, ref entry))
+                    do { entries.Add(entry); entry.Size = (uint)Marshal.SizeOf(typeof(ProcessEntry)); } while (Process32Next(snapshot, ref entry));
+            }
+            finally { CloseHandle(snapshot); }
+            var descendants = new HashSet<uint> { (uint)_edgeGameRoot };
+            bool changed;
+            do { changed = false; foreach (var entry in entries) if (descendants.Contains(entry.ParentId) && descendants.Add(entry.ProcessId)) changed = true; } while (changed);
+            lock (_ieGameProcesses)
+            {
+                _ieGameProcesses.Clear();
+                foreach (var entry in entries)
+                    if (descendants.Contains(entry.ProcessId) && string.Equals(entry.Name, "iexplore.exe", StringComparison.OrdinalIgnoreCase)) _ieGameProcesses.Add((int)entry.ProcessId);
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ProcessEntry
+        {
+            public uint Size, Usage, ProcessId;
+            public IntPtr DefaultHeap;
+            public uint ModuleId, ThreadCount, ParentId;
+            public int BasePriority;
+            public uint Flags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name;
+        }
+        [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32First(IntPtr snapshot, ref ProcessEntry entry);
+        [DllImport("kernel32.dll", EntryPoint = "Process32NextW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry entry);
+
+        private int BoundGameProcess()
+        {
+            RefreshGameProcesses();
+            Process[] owned;
+            lock (_ieGameProcesses)
+                owned = Process.GetProcessesByName("iexplore").Where(p => _ieGameProcesses.Contains(p.Id)).ToArray();
+            var loaded = owned.Where(HasFlash).ToArray();
+            if (loaded.Length == 1) return loaded[0].Id;
+            if (owned.Length == 1) return owned[0].Id;
+            // Edge's IE frame is 64-bit, while Flash commonly runs in its
+            // separate WOW64 content process. Bind the content, not the frame.
+            var content = owned.Where(p => { try { bool wow64; return IsWow64Process(p.Handle, out wow64) && wow64; } catch { return false; } }).ToArray();
+            if (content.Length == 1) return content[0].Id;
+            if (owned.Length > 1) throw new InvalidOperationException("本次游戏存在多个内容进程，暂时无法唯一绑定；请关闭其他新开的游戏窗口后重试。");
+            return 0;
+        }
+
+        private object GetGameReadiness()
+        {
+            try
+            {
+                int bound = BoundGameProcess();
+                if (bound > 0) return new { ok = true, ready = true, state = "bound", message = "已绑定本次打开的 IE 游戏内容进程（" + bound + "）。进入实际关卡后可直接采集，以采集到的 SWF 为准。" };
+            }
+            catch (Exception error) { return new { ok = true, ready = false, state = "multiple", message = error.Message }; }
+            if (_edgeGameRoot > 0) return new { ok = true, ready = false, state = "closed", message = "本次游戏内容进程尚未建立或已关闭，请重新打开游戏。" };
+            var hosts = Process.GetProcessesByName("iexplore");
+            var candidates = hosts.Where(HasFlash).ToArray();
+            var owned = candidates.Where(p => _ieGameProcesses.Contains(p.Id)).ToArray();
+            if (owned.Length == 1 || candidates.Length == 1)
+                return new { ok = true, ready = true, state = "ready", message = "已检测到 Flash 游戏进程。进入关卡、等待素材加载后即可采集。" };
+            if (candidates.Length > 1)
+                return new { ok = true, ready = false, state = "multiple", message = "检测到多个 Flash 游戏，请关闭其他游戏，或在高级备用中指定进程。" };
+            int denied = 0;
+            foreach (var host in hosts)
+            {
+                try { var count = host.Modules.Count; }
+                catch (System.ComponentModel.Win32Exception error) { if (error.NativeErrorCode == 5) denied++; }
+                catch { }
+            }
+            if (denied > 0)
+                return new { ok = true, ready = false, state = "permission", message = "发现 IE 进程，但无法读取其模块。请让游戏浏览器与本工具以相同权限运行；当前不能判断 Flash 是否已加载。" };
+            return new { ok = true, ready = false, state = hosts.Length == 0 ? "no_browser" : "waiting_flash", message = hosts.Length == 0 ? "尚未发现 IE 游戏进程，窗口可能已关闭。请点击重新打开游戏。" : "IE 宿主已启动，但 Flash 插件尚未加载。请检查是否仍在首页、空白页或不支持 Flash 的提示页；此时采集按钮保持禁用。" };
         }
 
         private int FindGameProcess()
         {
+            int bound = BoundGameProcess();
+            if (bound > 0) return bound;
+            if (_edgeGameRoot > 0) throw new InvalidOperationException("本次游戏内容进程已关闭或尚未建立，请重新打开游戏。");
             var candidates = Process.GetProcessesByName("iexplore").Where(HasFlash).ToArray();
             var owned = candidates.Where(p => _ieGameProcesses.Contains(p.Id)).ToArray();
             if (owned.Length == 1) return owned[0].Id;
             if (candidates.Length == 1) return candidates[0].Id;
             if (candidates.Length > 1) throw new InvalidOperationException("检测到多个 Flash 游戏进程。请关闭其他 Flash 游戏后重试，或使用备用进程选择。 ");
-            throw new InvalidOperationException("尚未检测到已加载 Flash 的游戏进程。请进入实际关卡；也可使用你已验证可玩的 Edge IE 模式打开游戏，再点击采集。 ");
+            throw new InvalidOperationException("Flash 游戏进程尚未就绪或已关闭。本次没有开始采集；请查看准备窗口的实时状态，必要时重新打开游戏。");
         }
         private Process _process;
         private bool _disposed;
@@ -377,6 +434,11 @@ namespace AndroidGameUnpacker
                     {
                         var request = ReadJson<StartRequest>(context);
                         WriteJson(context, Diagnose(request == null ? "" : request.InputUrl));
+                        return;
+                    }
+                    if (path == "/api/game-readiness")
+                    {
+                        WriteJson(context, GetGameReadiness());
                         return;
                     }
                     if (path == "/api/open-game")
@@ -823,7 +885,6 @@ namespace AndroidGameUnpacker
         public void Dispose()
         {
             _disposed = true;
-            try { if (_ieDriver != null && !_ieDriver.HasExited) _ieDriver.Kill(); } catch { }
             try { _listener.Stop(); } catch { }
         }
     }
